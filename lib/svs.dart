@@ -4,6 +4,7 @@ library;
 export 'src/annotation/svs_annotation.dart';
 export 'src/annotation/svs_annotation_controller.dart';
 export 'src/annotation/svs_measurement.dart';
+export 'src/cache/disk_tile_cache.dart';
 export 'src/cache/tile_cache.dart' show TileCache;
 export 'src/errors.dart';
 export 'src/render/associated_image_decoder.dart';

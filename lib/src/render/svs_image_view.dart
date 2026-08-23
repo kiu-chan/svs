@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 import '../annotation/svs_annotation.dart';
 import '../annotation/svs_annotation_controller.dart';
 import '../annotation/svs_measurement.dart';
+import '../cache/disk_tile_cache.dart';
 import '../cache/tile_cache.dart';
 import '../svs/svs_file.dart';
 import 'associated_image_decoder.dart';
@@ -26,6 +27,15 @@ import 'viewport_math.dart';
 class SvsImageView extends StatefulWidget {
   final SvsFile svsFile;
   final TileCache? cache;
+
+  /// Optional persistent tile cache — when supplied, decoded tiles are read
+  /// from here first (skipping the tile fetch and, for JPEG2000 slides, the
+  /// wavelet decode) and written back here after a fresh decode, so the
+  /// same region loads faster on the next visit — even across app restarts.
+  /// Typically opened via `DiskTileCache.open` at a directory scoped to this
+  /// specific slide file (different slides must not share a directory).
+  /// Left null (the default), tiles are decoded fresh every session.
+  final DiskTileCache? diskCache;
 
   /// How far a level's stored texels may be upsampled on screen before the
   /// next-finer level is chosen instead. See [selectLevel].
@@ -67,6 +77,7 @@ class SvsImageView extends StatefulWidget {
     this.maxUpsample = 1.3,
     this.maxScale = 4.0,
     this.prefetchMargin = 1,
+    this.diskCache,
     this.annotationController,
     this.onAnnotationTap,
     this.hitTestTolerance = 12,
@@ -87,6 +98,7 @@ class _SvsImageViewState extends State<SvsImageView>
     cache: _cache,
     maxUpsample: widget.maxUpsample,
     prefetchMargin: widget.prefetchMargin,
+    diskCache: widget.diskCache,
   );
 
   Size? _viewportSize;

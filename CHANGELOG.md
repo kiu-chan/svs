@@ -16,6 +16,12 @@
   `SvsImageView` shows this as a live label on line/rectangle/polygon
   annotations — including the one being drawn, so drawing doubles as a
   ruler — toggle with the new `SvsImageView.showMeasurements`.
+* `DiskTileCache`: an opt-in persistent tile cache. Pass one to the new
+  `SvsImageView.diskCache` and decoded tiles are read from disk first (and
+  written back after a fresh decode), so re-viewing the same region of a
+  slide — even across app restarts — skips the tile fetch and, for JPEG2000
+  slides, the wavelet decode. Byte-budgeted and LRU-evicted like the
+  existing in-memory `TileCache`.
 
 ## 0.2.0
 

@@ -38,6 +38,9 @@ never loaded into memory, however large the slide.
   level to PNG, JPEG, BMP, TIFF, or WebP bytes.
 * Memory-pressure aware tile cache, and active cancellation of in-flight
   tile requests once they scroll out of view.
+* **Persistent disk tile cache** (`DiskTileCache`, opt-in): decoded tiles
+  survive across app restarts, so re-viewing the same region of a slide
+  skips both the tile fetch and — for JPEG2000 slides — the wavelet decode.
 
 ## Getting started
 
@@ -63,6 +66,34 @@ await svsFile.close();
 
 `SvsImageView` handles pan/zoom gestures, tile streaming, and the minimap/
 HUD on its own — no further wiring needed.
+
+### Persistent tile cache
+
+By default, decoded tiles are cached in memory only — closing and
+re-opening the same slide decodes everything again from scratch. Pass a
+`DiskTileCache` to keep decoded tiles on disk between sessions, scoped to a
+directory unique to that slide (mixing tiles from different slides in one
+directory isn't supported — their level/tile-x/tile-y keys can collide).
+`svs` itself has no opinion on *where* that directory lives — pick one with
+your own app's `path_provider` dependency (or any other means of locating a
+writable directory):
+
+```dart
+import 'package:path_provider/path_provider.dart';
+
+final cacheDir = Directory(
+  '${(await getApplicationCacheDirectory()).path}/svs_tiles/${svsFile.path.hashCode}',
+);
+final diskCache = await DiskTileCache.open(cacheDir); // 500 MB budget by default
+
+SvsImageView(svsFile: svsFile, diskCache: diskCache);
+```
+
+Bounded by decoded-pixel byte budget and evicted LRU, same policy as the
+in-memory cache — pass `maxBytes` to `DiskTileCache.open` to change it.
+Most valuable for JPEG2000 slides, whose wavelet decode is comparatively
+expensive to redo; for JPEG slides the win is mainly skipping repeated file
+I/O.
 
 ### Cropping a region
 

@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show Offset, Size;
 
+import '../cache/disk_tile_cache.dart';
 import '../cache/tile_cache.dart';
 import '../io/tile_worker_pool.dart';
 import '../svs/svs_file.dart';
@@ -39,11 +40,17 @@ class LodController extends ChangeNotifier {
   /// pool instead of paying isolate-spawn cost per test.
   final Future<TileWorkerPool> poolFuture;
 
+  /// When set, decoded tiles are read from here first (skipping the fetch
+  /// and decode entirely on a hit) and written back here after a fresh
+  /// decode — see [DiskTileCache].
+  final DiskTileCache? diskCache;
+
   LodController({
     required this.svsFile,
     required this.cache,
     this.maxUpsample = 1.3,
     this.prefetchMargin = 1,
+    this.diskCache,
     Future<TileWorkerPool>? pool,
   }) : poolFuture = pool ?? TileWorkerPool.spawn(svsFile.path);
 
@@ -166,44 +173,55 @@ class LodController extends ChangeNotifier {
     TilePriority priority,
   ) async {
     try {
-      final result = await _fetchTileBytes(level, tx, ty, key, priority);
-      final bytes = result.bytes;
-      ui.Image? image;
-      if (bytes != null) {
-        if (result.isRgba) {
-          // JPEG2000: already decoded to RGBA by the worker (via
-          // openjpeg_ffi, which has no main-isolate restriction). Aperio's
-          // JP2K tiles are always encoded at the full nominal tile-grid
-          // size (unlike JPEG, a boundary tile can't come back cropped),
-          // so `level.tileWidth/tileLength` is the correct buffer shape.
-          image = await _decodeRgba(bytes, level.tileWidth, level.tileLength);
-        } else {
-          // JPEG: the worker only spliced the standalone bytes — the actual
-          // decode must happen here, `dart:ui`'s codec APIs only work on
-          // the main isolate (flutter/flutter#109701).
-          final codec = await ui.instantiateImageCodec(bytes);
-          final frame = await codec.getNextFrame();
-          if (level.needsYCbCrFix) {
-            final data = await frame.image.toByteData(
-              format: ui.ImageByteFormat.rawRgba,
+      final disk = diskCache;
+      var fromDisk = false;
+      var image = disk == null ? null : await disk.get(key);
+      if (image != null) fromDisk = true;
+
+      if (image == null) {
+        final result = await _fetchTileBytes(level, tx, ty, key, priority);
+        final bytes = result.bytes;
+        if (bytes != null) {
+          if (result.isRgba) {
+            // JPEG2000: already decoded to RGBA by the worker (via
+            // openjpeg_ffi, which has no main-isolate restriction). Aperio's
+            // JP2K tiles are always encoded at the full nominal tile-grid
+            // size (unlike JPEG, a boundary tile can't come back cropped),
+            // so `level.tileWidth/tileLength` is the correct buffer shape.
+            image = await _decodeRgba(
+              bytes,
+              level.tileWidth,
+              level.tileLength,
             );
-            // A tile at the right/bottom edge of the level can legally
-            // decode smaller than the nominal tile size — use the frame's
-            // *actual* dimensions here, not level.tileWidth/tileLength, or
-            // decodeImageFromPixels gets fed a buffer of the wrong length.
-            final actualWidth = frame.image.width;
-            final actualHeight = frame.image.height;
-            frame.image.dispose();
-            if (data != null) {
-              final pixels = data.buffer.asUint8List(
-                data.offsetInBytes,
-                data.lengthInBytes,
-              );
-              undoSpuriousYCbCr(pixels);
-              image = await _decodeRgba(pixels, actualWidth, actualHeight);
-            }
           } else {
-            image = frame.image;
+            // JPEG: the worker only spliced the standalone bytes — the
+            // actual decode must happen here, `dart:ui`'s codec APIs only
+            // work on the main isolate (flutter/flutter#109701).
+            final codec = await ui.instantiateImageCodec(bytes);
+            final frame = await codec.getNextFrame();
+            if (level.needsYCbCrFix) {
+              final data = await frame.image.toByteData(
+                format: ui.ImageByteFormat.rawRgba,
+              );
+              // A tile at the right/bottom edge of the level can legally
+              // decode smaller than the nominal tile size — use the
+              // frame's *actual* dimensions here, not
+              // level.tileWidth/tileLength, or decodeImageFromPixels gets
+              // fed a buffer of the wrong length.
+              final actualWidth = frame.image.width;
+              final actualHeight = frame.image.height;
+              frame.image.dispose();
+              if (data != null) {
+                final pixels = data.buffer.asUint8List(
+                  data.offsetInBytes,
+                  data.lengthInBytes,
+                );
+                undoSpuriousYCbCr(pixels);
+                image = await _decodeRgba(pixels, actualWidth, actualHeight);
+              }
+            } else {
+              image = frame.image;
+            }
           }
         }
       }
@@ -214,6 +232,25 @@ class LodController extends ChangeNotifier {
         image.dispose();
         return;
       }
+
+      // Persist a freshly-decoded tile (not one that just came from the
+      // disk cache itself) before it's handed to the memory cache, which
+      // may evict and dispose *other* entries but never touches this one
+      // until after cache.put below.
+      if (disk != null && !fromDisk) {
+        final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+        if (data != null) {
+          unawaited(
+            disk.put(
+              key,
+              data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+              image.width,
+              image.height,
+            ),
+          );
+        }
+      }
+
       cache.put(key, image, image.width * image.height * 4);
       if (_isStillWanted(key)) notifyListeners();
     } catch (_) {
