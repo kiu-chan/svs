@@ -10,12 +10,21 @@ import 'helpers/tiff_builder.dart';
 
 void main() {
   late Directory tempDir;
+  // Every raf opened via openBytes() below, closed in tearDown before the
+  // temp dir is deleted. Windows locks open files, so deleting a directory
+  // that still contains one throws — POSIX doesn't care, which is why this
+  // went unnoticed until this ran in CI on Windows.
+  final openRafs = <RandomAccessFile>[];
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('svs_tiff_test_');
   });
 
   tearDown(() async {
+    for (final raf in openRafs) {
+      await raf.close();
+    }
+    openRafs.clear();
     await tempDir.delete(recursive: true);
   });
 
@@ -23,6 +32,7 @@ void main() {
     final file = File('${tempDir.path}/test.tiff');
     await file.writeAsBytes(bytes);
     final raf = await file.open(mode: FileMode.read);
+    openRafs.add(raf);
     return TiffFile.open(raf);
   }
 
