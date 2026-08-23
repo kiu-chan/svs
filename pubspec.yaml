@@ -18,11 +18,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  # TODO: switch to `openjpeg_ffi: ^0.1.0` (hosted) once that package is
-  # published to pub.dev — pub.dev refuses to publish a package with a path
-  # dependency.
-  openjpeg_ffi:
-    path: packages/openjpeg_ffi
+  openjpeg_ffi: ^0.1.0
 
 dev_dependencies:
   flutter_test:

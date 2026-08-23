@@ -18,9 +18,8 @@ never loaded into memory, however large the slide.
 * **Background isolate decoding**: tile I/O and JPEG2000 decode run off the
   main isolate, so the UI thread stays responsive.
 * **JPEG and JPEG2000 tiles**, the two compressions Aperio actually ships
-  (`Compression` 7 and 33005) — JPEG2000 via the sibling
-  [`openjpeg_ffi`](https://github.com/kiu-chan/svs/tree/main/packages/openjpeg_ffi)
-  package.
+  (`Compression` 7 and 33005) — JPEG2000 via
+  [`openjpeg_ffi`](https://pub.dev/packages/openjpeg_ffi).
 * **Associated images and metadata**: thumbnail/label/macro images, and
   parsed Aperio metadata (magnification, microns-per-pixel, and the rest of
   the pipe-delimited `ImageDescription` block).

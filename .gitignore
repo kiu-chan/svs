@@ -23,15 +23,12 @@ migrate_working_dir/
 
 # Flutter/Dart/Pub related
 # Libraries should not include pubspec.lock, per https://dart.dev/guides/libraries/private-files#pubspeclock.
-# (Applies to packages/openjpeg_ffi too, including its own example/ app.)
 **/pubspec.lock
 **/doc/api/
 .dart_tool/
 .flutter-plugins-dependencies
 /build/
 /example/build/
-packages/*/build/
-packages/*/example/build/
 /coverage/
 
 .claude
