@@ -21,7 +21,11 @@ jobs:
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: stable
-      - run: dart pub get
+      # --no-example: example/ is a Flutter demo app (needs `flutter_test:
+      # sdk: flutter`), which plain `dart pub get` can't resolve — this
+      # runner has only a standalone Dart SDK, no Flutter. Not needed to
+      # run this package's own `dart test` suite below.
+      - run: dart pub get --no-example
       # Compiles the vendored OpenJPEG sources via native_toolchain_c's
       # per-platform toolchain resolver (MSVC / clang / gcc — no
       # hook/build.dart changes needed per platform, by design) and decodes
