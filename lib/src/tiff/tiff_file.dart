@@ -122,6 +122,14 @@ class TiffFile {
   final TiffHeader header;
   final List<TiffIfd> ifds;
 
+  // Serializes access to `_raf`: `setPosition` then `read` is two separate
+  // awaits on one shared file handle, so concurrent callers (e.g. many
+  // tiles requested at once while panning/zooming) can interleave their
+  // setPosition/read pairs and silently read each other's bytes at the
+  // wrong offset. Every read is chained onto this to force one in flight
+  // at a time.
+  Future<void> _readQueue = Future.value();
+
   TiffFile._(this._raf, this.header, this.ifds);
 
   static Future<TiffFile> open(RandomAccessFile raf) async {
@@ -145,8 +153,17 @@ class TiffFile {
     return file;
   }
 
-  Future<Uint8List> readBytes(int offset, int length) async {
-    if (length == 0) return Uint8List(0);
+  Future<Uint8List> readBytes(int offset, int length) {
+    if (length == 0) return Future.value(Uint8List(0));
+    final result = _readQueue.then((_) => _readBytesUnlocked(offset, length));
+    // Keep the queue moving even if this read failed — swallow the error
+    // here (it still propagates to the caller via `result`) so one bad
+    // read doesn't wedge every read after it.
+    _readQueue = result.then((_) {}, onError: (_) {});
+    return result;
+  }
+
+  Future<Uint8List> _readBytesUnlocked(int offset, int length) async {
     await _raf.setPosition(offset);
     final bytes = await _raf.read(length);
     if (bytes.length != length) {

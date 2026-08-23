@@ -141,4 +141,41 @@ void main() {
     final bytes = Uint8List.fromList([0x49, 0x49, 0x2A, 0]);
     await expectLater(openBytes(bytes), throwsA(isA<SvsFormatException>()));
   });
+
+  test('concurrent readBytes calls do not interleave on the shared file handle', () async {
+    // readBytes does setPosition() then read() as two separate awaits on one
+    // shared RandomAccessFile — without serializing them, concurrent callers
+    // (e.g. many tiles requested at once while panning) can interleave their
+    // setPosition/read pairs and silently read each other's bytes at the
+    // wrong offset. This is independent of TIFF semantics, so it's tested
+    // directly against readBytes on raw appended payloads.
+    final header = buildTiff(
+      bigTiff: false,
+      order: Endian.little,
+      ifds: [
+        [TestTag.ints(256, TiffType.short, [1], Endian.little)],
+      ],
+    );
+    const payloadCount = 50;
+    const payloadSize = 64;
+    final payloads = <Uint8List>[];
+    final builder = BytesBuilder()..add(header);
+    for (var i = 0; i < payloadCount; i++) {
+      final payload = Uint8List(payloadSize)..fillRange(0, payloadSize, i);
+      payloads.add(payload);
+      builder.add(payload);
+    }
+    final tiff = await openBytes(builder.toBytes());
+    final offsets = List.generate(payloadCount, (i) => header.length + i * payloadSize);
+
+    // Request in reverse order, all at once, to maximize the chance of
+    // exposing interleaving if the serialization regresses.
+    final indices = List.generate(payloadCount, (i) => payloadCount - 1 - i);
+    final futures = [for (final i in indices) tiff.readBytes(offsets[i], payloadSize)];
+    final results = await Future.wait(futures);
+
+    for (var k = 0; k < payloadCount; k++) {
+      expect(results[k], payloads[indices[k]], reason: 'payload ${indices[k]} came back wrong or from the wrong offset');
+    }
+  });
 }

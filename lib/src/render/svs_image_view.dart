@@ -274,8 +274,18 @@ class _TilePainter extends CustomPainter {
     final level = levels[levelIndex];
     final visible = computeVisibleTiles(level.geometry, size, scale, origin);
 
-    final imagePaint = Paint()..filterQuality = FilterQuality.medium;
-    final placeholderPaint = Paint()..color = const Color(0xFFE0E0E0);
+    // Anti-aliased edges on abutting tile rects each blend independently
+    // against whatever was already painted, which — even when two tiles'
+    // edges land on the exact same coordinate — leaves a visible hairline
+    // seam of under-covered background color. Disabling AA here makes each
+    // edge snap to whole device pixels instead, so neighboring tiles cover
+    // each other's border pixel completely.
+    final imagePaint = Paint()
+      ..filterQuality = FilterQuality.medium
+      ..isAntiAlias = false;
+    final placeholderPaint = Paint()
+      ..color = const Color(0xFFE0E0E0)
+      ..isAntiAlias = false;
 
     for (var ty = visible.minTy; ty <= visible.maxTy; ty++) {
       for (var tx = visible.minTx; tx <= visible.maxTx; tx++) {
@@ -291,12 +301,22 @@ class _TilePainter extends CustomPainter {
     }
   }
 
+  // Extends 1 logical pixel past each tile's true right/bottom edge. Two
+  // neighboring tiles' edges *should* land on the exact same float value,
+  // but floating-point associativity can drift them apart by a fraction of
+  // a pixel; without this, that gap (or independent per-rect pixel
+  // rounding, now that AA is off) shows through as a visible seam. The 1px
+  // overlap this creates into the next tile is imperceptible.
+  static const _seamGuard = 1.0;
+
   Rect _tileScreenRect(SvsLevel level, int tx, int ty) {
     final level0X = tx * level.tileWidth * level.downsample;
     final level0Y = ty * level.tileLength * level.downsample;
     final level0Width = level.tileWidth * level.downsample;
     final level0Height = level.tileLength * level.downsample;
-    return Rect.fromLTWH((level0X - origin.dx) * scale, (level0Y - origin.dy) * scale, level0Width * scale, level0Height * scale);
+    final left = (level0X - origin.dx) * scale;
+    final top = (level0Y - origin.dy) * scale;
+    return Rect.fromLTWH(left, top, level0Width * scale + _seamGuard, level0Height * scale + _seamGuard);
   }
 
   @override
