@@ -7,6 +7,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
 
 import '../cache/tile_cache.dart';
+import '../io/tile_worker_pool.dart';
 import '../svs/svs_file.dart';
 import 'associated_image_decoder.dart';
 import 'viewport_math.dart';
@@ -49,11 +50,16 @@ class SvsImageView extends StatefulWidget {
   State<SvsImageView> createState() => _SvsImageViewState();
 }
 
-class _SvsImageViewState extends State<SvsImageView> {
+class _SvsImageViewState extends State<SvsImageView> with WidgetsBindingObserver {
   late final TileCache _cache = widget.cache ?? TileCache();
   bool get _ownsCache => widget.cache == null;
 
-  final Set<TileCacheKey> _inFlight = {};
+  // Value is the TileWorkerPool requestId once known, so a tile that
+  // scrolls out of range can be actively cancelled instead of just having
+  // its eventual result ignored. Null until the pool (awaited
+  // asynchronously) actually issues the request; requests fetched via the
+  // main-isolate fallback path never get one and can't be cancelled early.
+  final Map<TileCacheKey, int?> _inFlight = {};
   VisibleTiles? _wanted;
   Timer? _debounce;
 
@@ -69,10 +75,31 @@ class _SvsImageViewState extends State<SvsImageView> {
 
   ui.Image? _overviewImage;
 
+  /// Tile bytes are fetched (and, for JPEG2000, decoded) on background
+  /// isolates so slow disk/network I/O and the JP2K wavelet decode don't
+  /// block the UI thread. If spawning the pool itself fails, [_fetchTileBytes]
+  /// falls back to fetching directly on the main isolate instead of bricking
+  /// the whole view.
+  late final Future<TileWorkerPool> _poolFuture;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _poolFuture = TileWorkerPool.spawn(widget.svsFile.path);
     unawaited(_loadOverview());
+  }
+
+  /// The OS is telling every app to free memory it doesn't strictly need
+  /// right now — decoded tiles are exactly that (cheaply re-fetched later),
+  /// so drop them all rather than risk being killed for a cache that's just
+  /// a speed optimization.
+  @override
+  void didHaveMemoryPressure() {
+    _cache.clear();
+    if (!mounted) return;
+    setState(() {}); // the tiles just disposed were still on screen — repaint placeholders instead of a stale-image crash
+    _scheduleTileRefresh(immediate: true); // re-fetch what's currently visible
   }
 
   Future<void> _loadOverview() async {
@@ -98,8 +125,10 @@ class _SvsImageViewState extends State<SvsImageView> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _debounce?.cancel();
     _overviewImage?.dispose();
+    unawaited(_poolFuture.then((pool) => pool.dispose(), onError: (_) {}));
     if (_ownsCache) _cache.clear();
     super.dispose();
   }
@@ -190,15 +219,38 @@ class _SvsImageViewState extends State<SvsImageView> {
       maxUpsample: widget.maxUpsample,
     );
     final level = levels[levelIndex];
-    final visible = computeVisibleTiles(level.geometry, viewportSize, _scale, _origin, margin: widget.prefetchMargin);
-    _wanted = visible;
+    // The strictly-on-screen range vs. the range expanded by the prefetch
+    // margin — on-screen tiles are routed to the "visible" worker so they
+    // never queue behind prefetch-margin ones (see TileWorkerPool).
+    final core = computeVisibleTiles(level.geometry, viewportSize, _scale, _origin);
+    final expanded = computeVisibleTiles(level.geometry, viewportSize, _scale, _origin, margin: widget.prefetchMargin);
+    _wanted = expanded;
 
-    for (var ty = visible.minTy; ty <= visible.maxTy; ty++) {
-      for (var tx = visible.minTx; tx <= visible.maxTx; tx++) {
+    final wantedKeys = <TileCacheKey>{
+      for (var ty = expanded.minTy; ty <= expanded.maxTy; ty++)
+        for (var tx = expanded.minTx; tx <= expanded.maxTx; tx++) TileCacheKey(level: level.index, tileX: tx, tileY: ty),
+    };
+
+    // Anything still in flight for a tile we no longer want (scrolled out
+    // of range, or the target level changed) gets actively cancelled —
+    // otherwise it'd keep occupying a worker and consuming bandwidth for a
+    // result nobody will use.
+    final toCancel = _inFlight.entries.where((entry) => !wantedKeys.contains(entry.key)).toList();
+    for (final entry in toCancel) {
+      _inFlight.remove(entry.key);
+      final requestId = entry.value;
+      if (requestId != null) {
+        unawaited(_poolFuture.then((pool) => pool.cancel(requestId), onError: (_) {}));
+      }
+    }
+
+    for (var ty = expanded.minTy; ty <= expanded.maxTy; ty++) {
+      for (var tx = expanded.minTx; tx <= expanded.maxTx; tx++) {
         final key = TileCacheKey(level: level.index, tileX: tx, tileY: ty);
-        if (_cache.contains(key) || _inFlight.contains(key)) continue;
-        _inFlight.add(key);
-        unawaited(_decodeTile(level, tx, ty, key));
+        if (_cache.contains(key) || _inFlight.containsKey(key)) continue;
+        _inFlight[key] = null;
+        final isCore = tx >= core.minTx && tx <= core.maxTx && ty >= core.minTy && ty <= core.maxTy;
+        unawaited(_decodeTile(level, tx, ty, key, isCore ? TilePriority.visible : TilePriority.prefetch));
       }
     }
   }
@@ -209,30 +261,42 @@ class _SvsImageViewState extends State<SvsImageView> {
     return key.tileX >= wanted.minTx && key.tileX <= wanted.maxTx && key.tileY >= wanted.minTy && key.tileY <= wanted.maxTy;
   }
 
-  Future<void> _decodeTile(SvsLevel level, int tx, int ty, TileCacheKey key) async {
+  Future<void> _decodeTile(SvsLevel level, int tx, int ty, TileCacheKey key, TilePriority priority) async {
     try {
+      final result = await _fetchTileBytes(level, tx, ty, key, priority);
+      final bytes = result.bytes;
       ui.Image? image;
-      if (level.isJpeg) {
-        final bytes = await widget.svsFile.readTileJpegBytes(level.index, tx, ty);
-        if (bytes.isNotEmpty) {
+      if (bytes != null) {
+        if (result.isRgba) {
+          // JPEG2000: already decoded to RGBA by the worker (via
+          // openjpeg_ffi, which has no main-isolate restriction). Aperio's
+          // JP2K tiles are always encoded at the full nominal tile-grid
+          // size (unlike JPEG, a boundary tile can't come back cropped),
+          // so `level.tileWidth/tileLength` is the correct buffer shape.
+          image = await _decodeRgba(bytes, level.tileWidth, level.tileLength);
+        } else {
+          // JPEG: the worker only spliced the standalone bytes — the actual
+          // decode must happen here, `dart:ui`'s codec APIs only work on
+          // the main isolate (flutter/flutter#109701).
           final codec = await ui.instantiateImageCodec(bytes);
           final frame = await codec.getNextFrame();
           if (level.needsYCbCrFix) {
             final data = await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+            // A tile at the right/bottom edge of the level can legally
+            // decode smaller than the nominal tile size — use the frame's
+            // *actual* dimensions here, not level.tileWidth/tileLength, or
+            // decodeImageFromPixels gets fed a buffer of the wrong length.
+            final actualWidth = frame.image.width;
+            final actualHeight = frame.image.height;
             frame.image.dispose();
             if (data != null) {
               final pixels = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
               undoSpuriousYCbCr(pixels);
-              image = await _decodeRgba(pixels, level.tileWidth, level.tileLength);
+              image = await _decodeRgba(pixels, actualWidth, actualHeight);
             }
           } else {
             image = frame.image;
           }
-        }
-      } else {
-        final rgba = await widget.svsFile.readTileRgba(level.index, tx, ty);
-        if (rgba.isNotEmpty) {
-          image = await _decodeRgba(rgba, level.tileWidth, level.tileLength);
         }
       }
 
@@ -248,6 +312,31 @@ class _SvsImageViewState extends State<SvsImageView> {
       _inFlight.remove(key);
       // Leave this tile blank rather than letting one bad tile crash the view.
     }
+  }
+
+  /// Routes through the isolate pool; if the pool itself never became
+  /// available (spawn failed), falls back to fetching directly on the main
+  /// isolate rather than leaving every tile permanently blank. Records the
+  /// pool request's id into [_inFlight] as soon as it's known, so
+  /// [_refreshTiles] can actively [TileWorkerPool.cancel] it later.
+  Future<TileWorkerResult> _fetchTileBytes(SvsLevel level, int tx, int ty, TileCacheKey key, TilePriority priority) async {
+    TileWorkerPool? pool;
+    try {
+      pool = await _poolFuture;
+    } catch (_) {
+      pool = null;
+    }
+    if (pool != null) {
+      final handle = pool.requestTile(level: level.index, tileX: tx, tileY: ty, priority: priority);
+      _inFlight[key] = handle.requestId;
+      return handle.result;
+    }
+    if (level.isJpeg) {
+      final bytes = await widget.svsFile.readTileJpegBytes(level.index, tx, ty);
+      return TileWorkerResult(bytes: bytes.isEmpty ? null : bytes, isRgba: false);
+    }
+    final rgba = await widget.svsFile.readTileRgba(level.index, tx, ty);
+    return TileWorkerResult(bytes: rgba.isEmpty ? null : rgba, isRgba: true);
   }
 
   Future<ui.Image> _decodeRgba(Uint8List bytes, int width, int height) {

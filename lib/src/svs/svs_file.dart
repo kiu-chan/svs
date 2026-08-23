@@ -340,12 +340,22 @@ class SvsLevel {
 /// render.
 class SvsFile {
   final TiffFile _tiff;
+
+  /// The path this file was opened from. Kept so a background isolate can
+  /// reopen the same file independently (see `TileWorkerPool`) — a
+  /// `RandomAccessFile` handle can't be shared across isolates.
+  final String path;
   final List<SvsLevel> levels;
   final List<SvsAssociatedImage> associatedImages;
   final SvsMetadata metadata;
 
-  SvsFile._({required TiffFile tiff, required this.levels, required this.associatedImages, required this.metadata})
-    : _tiff = tiff;
+  SvsFile._({
+    required TiffFile tiff,
+    required this.path,
+    required this.levels,
+    required this.associatedImages,
+    required this.metadata,
+  }) : _tiff = tiff;
 
   static Future<SvsFile> open(String path) async {
     final raf = await File(path).open(mode: FileMode.read);
@@ -358,14 +368,14 @@ class SvsFile {
     }
 
     try {
-      return await _fromTiff(tiff);
+      return await _fromTiff(tiff, path);
     } catch (_) {
       await tiff.close();
       rethrow;
     }
   }
 
-  static Future<SvsFile> _fromTiff(TiffFile tiff) async {
+  static Future<SvsFile> _fromTiff(TiffFile tiff, String path) async {
     if (tiff.ifds.isEmpty) {
       throw const SvsFormatException('File has no image directories');
     }
@@ -445,7 +455,7 @@ class SvsFile {
       throw const SvsFormatException('No tiled pyramid levels found — not a valid whole-slide TIFF');
     }
 
-    return SvsFile._(tiff: tiff, levels: levels, associatedImages: associated, metadata: metadata);
+    return SvsFile._(tiff: tiff, path: path, levels: levels, associatedImages: associated, metadata: metadata);
   }
 
   static AssociatedImageKind _classifyAssociatedImage(String? description) {
