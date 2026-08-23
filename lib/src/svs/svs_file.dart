@@ -1,0 +1,249 @@
+import 'dart:io';
+import 'dart:typed_data';
+
+import '../errors.dart';
+import '../jpeg/jpeg_tables.dart';
+import '../tiff/tiff_file.dart';
+import 'aperio_tags.dart';
+import 'svs_metadata.dart';
+
+enum AssociatedImageKind { label, macro, thumbnail }
+
+/// A non-tiled image embedded alongside the pyramid — the slide label,
+/// a macro (gross) photo, or a scanner-generated thumbnail.
+class SvsAssociatedImage {
+  final AssociatedImageKind kind;
+  final int ifdIndex;
+  final int width;
+  final int height;
+
+  /// False when this image isn't JPEG-compressed. Still listed rather than
+  /// dropped — v1 just can't decode its pixels.
+  final bool isDecodable;
+
+  const SvsAssociatedImage({
+    required this.kind,
+    required this.ifdIndex,
+    required this.width,
+    required this.height,
+    required this.isDecodable,
+  });
+}
+
+/// The pure geometric facts about one pyramid level, independent of whether
+/// (or how) its tile bytes can actually be fetched — so viewport/LOD math
+/// (see viewport_math.dart) can be unit-tested without opening any file.
+class SvsLevelGeometry {
+  final int index;
+  final int width;
+  final int height;
+  final int tileWidth;
+  final int tileLength;
+
+  /// `level0.width / width`. Real Aperio files are usually close to exact
+  /// powers of 2 but this is computed, never assumed.
+  final double downsample;
+
+  const SvsLevelGeometry({
+    required this.index,
+    required this.width,
+    required this.height,
+    required this.tileWidth,
+    required this.tileLength,
+    required this.downsample,
+  });
+
+  int get tilesAcrossX => (width / tileWidth).ceil();
+  int get tilesAcrossY => (height / tileLength).ceil();
+}
+
+/// One level of the resolution pyramid: level 0 is full resolution, each
+/// subsequent level is progressively downsampled. Tile tables and
+/// JPEGTables are only read from disk the first time a tile is actually
+/// requested from this level.
+class SvsLevel {
+  final SvsLevelGeometry geometry;
+
+  int get index => geometry.index;
+  int get width => geometry.width;
+  int get height => geometry.height;
+  int get tileWidth => geometry.tileWidth;
+  int get tileLength => geometry.tileLength;
+  double get downsample => geometry.downsample;
+  int get tilesAcrossX => geometry.tilesAcrossX;
+  int get tilesAcrossY => geometry.tilesAcrossY;
+
+  final TiffFile _file;
+  final TiffIfd _ifd;
+
+  List<int>? _tileOffsets;
+  List<int>? _tileByteCounts;
+  Uint8List? _jpegTables;
+  bool _jpegTablesLoaded = false;
+
+  SvsLevel._({required this.geometry, required TiffFile file, required TiffIfd ifd}) : _file = file, _ifd = ifd;
+
+  Future<void> _ensureTileTablesLoaded() async {
+    if (_tileOffsets != null) return;
+    final offsets = await _ifd.readInts(ApTag.tileOffsets);
+    final byteCounts = await _ifd.readInts(ApTag.tileByteCounts);
+    final expected = tilesAcrossX * tilesAcrossY;
+    if (offsets.length != expected || byteCounts.length != expected) {
+      throw SvsFormatException(
+        'Level $index tile table length mismatch: expected $expected tiles '
+        '(${tilesAcrossX}x$tilesAcrossY), got ${offsets.length} offsets / '
+        '${byteCounts.length} byte counts',
+      );
+    }
+    _tileOffsets = offsets;
+    _tileByteCounts = byteCounts;
+  }
+
+  Future<Uint8List?> _loadJpegTables() async {
+    if (_jpegTablesLoaded) return _jpegTables;
+    _jpegTablesLoaded = true;
+    if (_ifd.hasTag(ApTag.jpegTables)) {
+      _jpegTables = await _ifd.readRawBytes(ApTag.jpegTables);
+    }
+    return _jpegTables;
+  }
+
+  /// The spliced, standalone-decodable JPEG bytes for tile ([tx], [ty]).
+  /// Empty for a sparse tile (byte count 0 in the file) — callers should
+  /// treat that as blank rather than attempt to decode it.
+  Future<Uint8List> readTileJpegBytes(int tx, int ty) async {
+    await _ensureTileTablesLoaded();
+    final tilesX = tilesAcrossX;
+    final tilesY = tilesAcrossY;
+    if (tx < 0 || tx >= tilesX || ty < 0 || ty >= tilesY) {
+      throw SvsFormatException('Tile ($tx,$ty) out of range for level $index (${tilesX}x$tilesY tiles)');
+    }
+
+    final i = ty * tilesX + tx;
+    final byteCount = _tileByteCounts![i];
+    if (byteCount == 0) return Uint8List(0);
+
+    final offset = _tileOffsets![i];
+    final rawTile = await _file.readBytes(offset, byteCount);
+    final tables = await _loadJpegTables();
+    return spliceJpegTile(tables, rawTile);
+  }
+}
+
+/// An open Aperio SVS file: the resolution pyramid, any associated images,
+/// and the slide metadata parsed from level 0's `ImageDescription`.
+///
+/// v1 only supports SVS files whose pyramid tiles use standard ("new-style",
+/// TIFF `Compression` = 7) JPEG — [open] throws [SvsUnsupportedCompressionError]
+/// immediately for anything else (notably JPEG2000-compressed SVS), rather
+/// than opening a file this package can list levels for but never actually
+/// render.
+class SvsFile {
+  final TiffFile _tiff;
+  final List<SvsLevel> levels;
+  final List<SvsAssociatedImage> associatedImages;
+  final SvsMetadata metadata;
+
+  SvsFile._({required TiffFile tiff, required this.levels, required this.associatedImages, required this.metadata})
+    : _tiff = tiff;
+
+  static Future<SvsFile> open(String path) async {
+    final raf = await File(path).open(mode: FileMode.read);
+    final TiffFile tiff;
+    try {
+      tiff = await TiffFile.open(raf);
+    } catch (_) {
+      await raf.close();
+      rethrow;
+    }
+
+    try {
+      return await _fromTiff(tiff);
+    } catch (_) {
+      await tiff.close();
+      rethrow;
+    }
+  }
+
+  static Future<SvsFile> _fromTiff(TiffFile tiff) async {
+    if (tiff.ifds.isEmpty) {
+      throw const SvsFormatException('File has no image directories');
+    }
+
+    final levels = <SvsLevel>[];
+    final associated = <SvsAssociatedImage>[];
+    var metadata = const SvsMetadata(raw: {});
+
+    for (var i = 0; i < tiff.ifds.length; i++) {
+      final ifd = tiff.ifds[i];
+      final isTiled = ifd.hasTag(ApTag.tileWidth) && ifd.hasTag(ApTag.tileLength);
+      final width = await ifd.readInt(ApTag.imageWidth);
+      final height = await ifd.readInt(ApTag.imageLength);
+      final description = await ifd.readAscii(ApTag.imageDescription);
+
+      if (isTiled) {
+        final compression = await ifd.readInt(ApTag.compression, fallback: ApCompression.newJpeg);
+        if (compression != ApCompression.newJpeg) {
+          throw SvsUnsupportedCompressionError(
+            compression,
+            'IFD $i (level ${levels.length}) uses TIFF Compression=$compression, which this '
+            'package cannot decode — only new-style JPEG (Compression=7) is supported',
+          );
+        }
+        final tileWidth = await ifd.readInt(ApTag.tileWidth);
+        final tileLength = await ifd.readInt(ApTag.tileLength);
+        final baseWidth = levels.isEmpty ? width : levels.first.width;
+        levels.add(
+          SvsLevel._(
+            geometry: SvsLevelGeometry(
+              index: levels.length,
+              width: width,
+              height: height,
+              tileWidth: tileWidth,
+              tileLength: tileLength,
+              downsample: baseWidth / width,
+            ),
+            file: tiff,
+            ifd: ifd,
+          ),
+        );
+        if (levels.length == 1) {
+          metadata = SvsMetadata.parse(description);
+        }
+      } else {
+        final compression = await ifd.readInt(ApTag.compression, fallback: 0);
+        associated.add(
+          SvsAssociatedImage(
+            kind: _classifyAssociatedImage(description),
+            ifdIndex: i,
+            width: width,
+            height: height,
+            isDecodable: compression == ApCompression.newJpeg,
+          ),
+        );
+      }
+    }
+
+    if (levels.isEmpty) {
+      throw const SvsFormatException('No tiled pyramid levels found — not a valid whole-slide TIFF');
+    }
+
+    return SvsFile._(tiff: tiff, levels: levels, associatedImages: associated, metadata: metadata);
+  }
+
+  static AssociatedImageKind _classifyAssociatedImage(String? description) {
+    final d = description?.toLowerCase() ?? '';
+    if (d.contains('macro')) return AssociatedImageKind.macro;
+    if (d.contains('label')) return AssociatedImageKind.label;
+    return AssociatedImageKind.thumbnail;
+  }
+
+  Future<Uint8List> readTileJpegBytes(int level, int tx, int ty) {
+    if (level < 0 || level >= levels.length) {
+      throw SvsFormatException('Level $level out of range (have ${levels.length} levels)');
+    }
+    return levels[level].readTileJpegBytes(tx, ty);
+  }
+
+  Future<void> close() => _tiff.close();
+}
