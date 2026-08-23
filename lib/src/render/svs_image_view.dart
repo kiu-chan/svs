@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 
 import '../cache/tile_cache.dart';
 import '../svs/svs_file.dart';
+import 'associated_image_decoder.dart';
 import 'viewport_math.dart';
 import 'ycbcr_fix.dart';
 
@@ -66,9 +67,39 @@ class _SvsImageViewState extends State<SvsImageView> {
   Offset _gestureStartOrigin = Offset.zero;
   Offset _gestureStartFocalPoint = Offset.zero;
 
+  ui.Image? _overviewImage;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadOverview());
+  }
+
+  Future<void> _loadOverview() async {
+    SvsAssociatedImage? thumbnail;
+    for (final associated in widget.svsFile.associatedImages) {
+      if (associated.kind == AssociatedImageKind.thumbnail && associated.isDecodable) {
+        thumbnail = associated;
+        break;
+      }
+    }
+    if (thumbnail == null) return;
+    try {
+      final image = await decodeAssociatedImage(thumbnail);
+      if (!mounted) {
+        image.dispose();
+        return;
+      }
+      setState(() => _overviewImage = image);
+    } catch (_) {
+      // No minimap if the thumbnail can't be decoded — not critical.
+    }
+  }
+
   @override
   void dispose() {
     _debounce?.cancel();
+    _overviewImage?.dispose();
     if (_ownsCache) _cache.clear();
     super.dispose();
   }
@@ -225,6 +256,18 @@ class _SvsImageViewState extends State<SvsImageView> {
     return completer.future;
   }
 
+  /// Recenters the viewport on [level0Point] (a coordinate in the full
+  /// slide's level-0 pixel space) at the current scale — what tapping or
+  /// dragging on the minimap does.
+  void _navigateTo(Offset level0Point) {
+    final viewportSize = _viewportSize;
+    if (viewportSize == null) return;
+    setState(() {
+      _origin = level0Point - Offset(viewportSize.width, viewportSize.height) / (2 * _scale);
+    });
+    _scheduleTileRefresh(immediate: true);
+  }
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
@@ -239,18 +282,44 @@ class _SvsImageViewState extends State<SvsImageView> {
         }
         if (!_initialized) return const SizedBox.shrink();
 
+        final level0 = widget.svsFile.levels.first;
+        final overview = _overviewImage;
+
         return ClipRect(
-          child: Listener(
-            onPointerSignal: _onPointerSignal,
-            child: GestureDetector(
-              onScaleStart: _onScaleStart,
-              onScaleUpdate: _onScaleUpdate,
-              onScaleEnd: _onScaleEnd,
-              child: CustomPaint(
-                size: viewportSize,
-                painter: _TilePainter(svsFile: widget.svsFile, cache: _cache, scale: _scale, origin: _origin, maxUpsample: widget.maxUpsample),
+          child: Stack(
+            children: [
+              Listener(
+                onPointerSignal: _onPointerSignal,
+                child: GestureDetector(
+                  onScaleStart: _onScaleStart,
+                  onScaleUpdate: _onScaleUpdate,
+                  onScaleEnd: _onScaleEnd,
+                  child: CustomPaint(
+                    size: viewportSize,
+                    painter: _TilePainter(svsFile: widget.svsFile, cache: _cache, scale: _scale, origin: _origin, maxUpsample: widget.maxUpsample),
+                  ),
+                ),
               ),
-            ),
+              Positioned(
+                left: 12,
+                bottom: 12,
+                child: _HudOverlay(scale: _scale, mppX: widget.svsFile.metadata.mppX),
+              ),
+              if (overview != null)
+                Positioned(
+                  right: 12,
+                  top: 12,
+                  child: _Minimap(
+                    overviewImage: overview,
+                    level0Width: level0.width,
+                    level0Height: level0.height,
+                    origin: _origin,
+                    scale: _scale,
+                    viewportSize: viewportSize,
+                    onNavigate: _navigateTo,
+                  ),
+                ),
+            ],
           ),
         );
       },
@@ -357,4 +426,189 @@ class _TilePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _TilePainter oldDelegate) => true;
+}
+
+/// Bottom-left HUD: current zoom percentage (100% = one screen pixel per
+/// level-0 pixel) and, when the slide's microns-per-pixel is known, a
+/// physical scale bar.
+class _HudOverlay extends StatelessWidget {
+  final double scale;
+  final double? mppX;
+
+  const _HudOverlay({required this.scale, required this.mppX});
+
+  @override
+  Widget build(BuildContext context) {
+    final zoomPercent = (scale * 100).round();
+    final mpp = mppX;
+    final bar = mpp == null ? null : _pickScaleBar(mpp / scale);
+
+    return DecoratedBox(
+      decoration: BoxDecoration(color: const Color(0x99000000), borderRadius: BorderRadius.circular(6)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (bar != null) ...[
+              CustomPaint(size: Size(bar.pixelWidth, 10), painter: _ScaleBarPainter()),
+              const SizedBox(width: 6),
+              Text(bar.label, style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 12)),
+              const SizedBox(width: 12),
+            ],
+            Text('$zoomPercent%', style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 12, fontWeight: FontWeight.bold)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ScaleBarPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = const Color(0xFFFFFFFF)
+      ..strokeWidth = 1.5;
+    final midY = size.height / 2;
+    canvas.drawLine(Offset(0, midY), Offset(size.width, midY), paint);
+    canvas.drawLine(Offset(0, 0), Offset(0, size.height), paint);
+    canvas.drawLine(Offset(size.width, 0), Offset(size.width, size.height), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScaleBarPainter oldDelegate) => false;
+}
+
+typedef _ScaleBarSpec = ({double pixelWidth, String label});
+
+/// Picks a "nice" round physical length (1-2-5 sequence, in micrometers)
+/// whose on-screen width — given [umPerScreenPixel] microns per screen
+/// pixel at the current zoom — fits under [maxBarWidth], preferring the
+/// largest one that still fits so the bar reads clearly.
+_ScaleBarSpec? _pickScaleBar(double umPerScreenPixel, {double maxBarWidth = 120}) {
+  if (!umPerScreenPixel.isFinite || umPerScreenPixel <= 0) return null;
+
+  const niceValuesUm = <double>[0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
+
+  var chosen = niceValuesUm.first;
+  for (final value in niceValuesUm) {
+    if (value / umPerScreenPixel > maxBarWidth) break;
+    chosen = value;
+  }
+
+  final pixelWidth = chosen / umPerScreenPixel;
+  final label = chosen >= 1000
+      ? '${(chosen / 1000).toStringAsFixed(0)} mm'
+      : chosen % 1 == 0
+      ? '${chosen.toStringAsFixed(0)} µm'
+      : '${chosen.toStringAsFixed(1)} µm';
+  return (pixelWidth: pixelWidth, label: label);
+}
+
+/// Top-right minimap: the slide's thumbnail with a rectangle showing what
+/// part of the full slide the main view currently shows. Tap or drag on it
+/// to jump the main view there.
+class _Minimap extends StatelessWidget {
+  static const double _maxDimension = 160;
+
+  final ui.Image overviewImage;
+  final int level0Width;
+  final int level0Height;
+  final Offset origin;
+  final double scale;
+  final Size viewportSize;
+  final ValueChanged<Offset> onNavigate;
+
+  const _Minimap({
+    required this.overviewImage,
+    required this.level0Width,
+    required this.level0Height,
+    required this.origin,
+    required this.scale,
+    required this.viewportSize,
+    required this.onNavigate,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final aspect = level0Width / level0Height;
+    final boxSize = aspect >= 1 ? Size(_maxDimension, _maxDimension / aspect) : Size(_maxDimension * aspect, _maxDimension);
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: const Color(0x99FFFFFF)),
+        boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 6)],
+      ),
+      child: GestureDetector(
+        onTapUp: (details) => _navigate(details.localPosition, boxSize),
+        onPanUpdate: (details) => _navigate(details.localPosition, boxSize),
+        child: SizedBox(
+          width: boxSize.width,
+          height: boxSize.height,
+          child: CustomPaint(
+            painter: _MinimapPainter(
+              image: overviewImage,
+              level0Width: level0Width,
+              level0Height: level0Height,
+              origin: origin,
+              scale: scale,
+              viewportSize: viewportSize,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _navigate(Offset local, Size boxSize) {
+    final fx = (local.dx / boxSize.width).clamp(0.0, 1.0);
+    final fy = (local.dy / boxSize.height).clamp(0.0, 1.0);
+    onNavigate(Offset(fx * level0Width, fy * level0Height));
+  }
+}
+
+class _MinimapPainter extends CustomPainter {
+  final ui.Image image;
+  final int level0Width;
+  final int level0Height;
+  final Offset origin;
+  final double scale;
+  final Size viewportSize;
+
+  _MinimapPainter({
+    required this.image,
+    required this.level0Width,
+    required this.level0Height,
+    required this.origin,
+    required this.scale,
+    required this.viewportSize,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final imageRect = Rect.fromLTWH(0, 0, size.width, size.height);
+    canvas.drawImageRect(image, Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()), imageRect, Paint());
+
+    final xRatio = size.width / level0Width;
+    final yRatio = size.height / level0Height;
+    final viewRect = Rect.fromLTWH(
+      origin.dx * xRatio,
+      origin.dy * yRatio,
+      (viewportSize.width / scale) * xRatio,
+      (viewportSize.height / scale) * yRatio,
+    ).intersect(imageRect);
+
+    canvas.drawRect(viewRect, Paint()..color = const Color(0x40FFEB3B));
+    canvas.drawRect(
+      viewRect,
+      Paint()
+        ..color = const Color(0xFFFFEB3B)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _MinimapPainter oldDelegate) => true;
 }
