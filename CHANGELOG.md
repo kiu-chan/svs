@@ -1,3 +1,10 @@
+## Unreleased
+
+* `readSvsRegion`: crops an arbitrary rectangle of any pyramid level to a
+  single composited image, stitching together only the tiles it overlaps.
+  The rectangle may hang off the level's edges; the out-of-bounds part
+  decodes transparent.
+
 ## 0.1.0
 
 * Initial release.

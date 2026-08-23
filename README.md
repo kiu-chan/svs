@@ -23,6 +23,9 @@ never loaded into memory, however large the slide.
 * **Associated images and metadata**: thumbnail/label/macro images, and
   parsed Aperio metadata (magnification, microns-per-pixel, and the rest of
   the pipe-delimited `ImageDescription` block).
+* **Region cropping** (`readSvsRegion`): decode an arbitrary rectangle of any
+  pyramid level to a single composited image, without loading the whole
+  level.
 * Memory-pressure aware tile cache, and active cancellation of in-flight
   tile requests once they scroll out of view.
 
@@ -49,8 +52,35 @@ await svsFile.close();
 ```
 
 `SvsImageView` handles pan/zoom gestures, tile streaming, and the minimap/
-HUD on its own — no further wiring needed. See
-[`example/`](example/) for a minimal runnable app, or
+HUD on its own — no further wiring needed.
+
+### Cropping a region
+
+To pull out an arbitrary rectangle — e.g. exporting a region of interest, or
+generating a fixed-size tile at a chosen resolution — use `readSvsRegion`.
+Coordinates are in the given pyramid level's own pixel space (level 0 is
+full resolution), and the rectangle may hang off the level's edges; the
+out-of-bounds part comes back transparent:
+
+```dart
+final region = await readSvsRegion(
+  svsFile,
+  level: 0,
+  x: 1000,
+  y: 2000,
+  width: 512,
+  height: 512,
+);
+// region is a dart:ui Image — draw it, or convert to bytes:
+final bytes = await region.toByteData(format: ui.ImageByteFormat.png);
+region.dispose();
+```
+
+`readSvsRegion` must be called on the main isolate (like any other
+`dart:ui` decode) and stitches together only the tiles the rectangle
+actually overlaps.
+
+See [`example/`](example/) for a minimal runnable app, or
 [`svs_example`](https://github.com/kiu-chan/svs_example) for a
 full-featured demo (file picker, associated-image previews, metadata
 inspector) built on top of this package.
