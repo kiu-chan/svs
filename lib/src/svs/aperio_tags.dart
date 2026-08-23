@@ -6,6 +6,9 @@ abstract final class ApTag {
   static const imageLength = 257;
   static const compression = 259;
   static const imageDescription = 270;
+  static const stripOffsets = 273;
+  static const rowsPerStrip = 278;
+  static const stripByteCounts = 279;
   static const tileWidth = 322;
   static const tileLength = 323;
   static const tileOffsets = 324;

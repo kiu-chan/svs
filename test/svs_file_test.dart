@@ -107,6 +107,27 @@ void main() {
     expect(svs.associatedImages[2].kind, AssociatedImageKind.thumbnail); // no description -> default
   });
 
+  test('readStripJpegBytes on a non-decodable associated image throws clearly', () async {
+    final bytes = buildTiff(
+      bigTiff: false,
+      order: Endian.little,
+      ifds: [
+        tiledLevelTags(width: 256, height: 256, tileSize: 256),
+        associatedImageTags(width: 100, height: 80, compression: 1), // uncompressed, not JPEG
+      ],
+    );
+    final path = await writeBytes(bytes);
+
+    final svs = await SvsFile.open(path);
+    addTearDown(svs.close);
+
+    expect(svs.associatedImages.single.isDecodable, isFalse);
+    await expectLater(
+      svs.associatedImages.single.readStripJpegBytes(0),
+      throwsA(isA<SvsUnsupportedCompressionError>()),
+    );
+  });
+
   test('rejects a pyramid level with unsupported compression', () async {
     final bytes = buildTiff(
       bigTiff: false,

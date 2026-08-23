@@ -16,18 +16,97 @@ class SvsAssociatedImage {
   final int ifdIndex;
   final int width;
   final int height;
+  final int compression;
 
   /// False when this image isn't JPEG-compressed. Still listed rather than
   /// dropped — v1 just can't decode its pixels.
-  final bool isDecodable;
+  bool get isDecodable => compression == ApCompression.newJpeg;
 
-  const SvsAssociatedImage({
+  final TiffFile _file;
+  final TiffIfd _ifd;
+
+  List<int>? _stripOffsets;
+  List<int>? _stripByteCounts;
+  int? _rowsPerStrip;
+  Uint8List? _jpegTables;
+  bool _jpegTablesLoaded = false;
+
+  SvsAssociatedImage._({
     required this.kind,
     required this.ifdIndex,
     required this.width,
     required this.height,
-    required this.isDecodable,
-  });
+    required this.compression,
+    required TiffFile file,
+    required TiffIfd ifd,
+  }) : _file = file,
+       _ifd = ifd;
+
+  Future<void> _ensureStripTablesLoaded() async {
+    if (_stripOffsets != null) return;
+    final offsets = await _ifd.readInts(ApTag.stripOffsets);
+    final byteCounts = await _ifd.readInts(ApTag.stripByteCounts);
+    if (offsets.length != byteCounts.length) {
+      throw SvsFormatException(
+        'Associated image (IFD $ifdIndex) has mismatched strip tables: '
+        '${offsets.length} offsets vs ${byteCounts.length} byte counts',
+      );
+    }
+    _stripOffsets = offsets;
+    _stripByteCounts = byteCounts;
+    // Absent RowsPerStrip means the whole image is one strip (TIFF default).
+    _rowsPerStrip = _ifd.hasTag(ApTag.rowsPerStrip) ? await _ifd.readInt(ApTag.rowsPerStrip) : height;
+  }
+
+  Future<Uint8List?> _loadJpegTables() async {
+    if (_jpegTablesLoaded) return _jpegTables;
+    _jpegTablesLoaded = true;
+    if (_ifd.hasTag(ApTag.jpegTables)) {
+      _jpegTables = await _ifd.readRawBytes(ApTag.jpegTables);
+    }
+    return _jpegTables;
+  }
+
+  /// Number of independent JPEG strips this image is stored as. Non-tiled
+  /// images are almost never a single contiguous JPEG — each strip covers
+  /// up to [rowsPerStrip] rows and is its own standalone JPEG frame (sharing
+  /// the file's JPEGTables), so a full decode means decoding every strip and
+  /// compositing them, not concatenating their compressed bytes.
+  Future<int> get stripCount async {
+    await _ensureStripTablesLoaded();
+    return _stripOffsets!.length;
+  }
+
+  /// Row span covered by every strip except possibly the last (which may be
+  /// shorter, when [height] isn't a multiple of this).
+  Future<int> get rowsPerStrip async {
+    await _ensureStripTablesLoaded();
+    return _rowsPerStrip!;
+  }
+
+  /// The spliced, standalone-decodable JPEG bytes for strip [i] alone —
+  /// covering rows `[i * rowsPerStrip, min((i + 1) * rowsPerStrip, height))`
+  /// of the image. Empty for a sparse strip (byte count 0 in the file).
+  ///
+  /// Throws [SvsUnsupportedCompressionError] if [isDecodable] is false —
+  /// check that first to avoid the exception.
+  Future<Uint8List> readStripJpegBytes(int i) async {
+    if (!isDecodable) {
+      throw SvsUnsupportedCompressionError(
+        compression,
+        'Associated image (IFD $ifdIndex, $kind) uses TIFF Compression=$compression, which this '
+        'package cannot decode — only new-style JPEG (Compression=7) is supported',
+      );
+    }
+
+    await _ensureStripTablesLoaded();
+    final byteCount = _stripByteCounts![i];
+    if (byteCount == 0) return Uint8List(0);
+
+    final raw = await _file.readBytes(_stripOffsets![i], byteCount);
+    final tables = await _loadJpegTables();
+    return spliceJpegTile(tables, raw);
+  }
 }
 
 /// The pure geometric facts about one pyramid level, independent of whether
@@ -213,12 +292,14 @@ class SvsFile {
       } else {
         final compression = await ifd.readInt(ApTag.compression, fallback: 0);
         associated.add(
-          SvsAssociatedImage(
+          SvsAssociatedImage._(
             kind: _classifyAssociatedImage(description),
             ifdIndex: i,
             width: width,
             height: height,
-            isDecodable: compression == ApCompression.newJpeg,
+            compression: compression,
+            file: tiff,
+            ifd: ifd,
           ),
         );
       }

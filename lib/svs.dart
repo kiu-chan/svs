@@ -2,5 +2,6 @@
 library;
 
 export 'src/errors.dart';
+export 'src/render/associated_image_decoder.dart';
 export 'src/svs/svs_file.dart';
 export 'src/svs/svs_metadata.dart';
