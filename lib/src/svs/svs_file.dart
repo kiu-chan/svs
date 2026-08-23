@@ -195,6 +195,10 @@ class SvsLevelGeometry {
   final int tileLength;
   final int compression;
 
+  /// TIFF `PhotometricInterpretation` (262), or -1 if absent. Only
+  /// meaningful for JPEG-compressed levels — see [SvsLevel.needsYCbCrFix].
+  final int photometricInterpretation;
+
   /// `level0.width / width`. Real Aperio files are usually close to exact
   /// powers of 2 but this is computed, never assumed.
   final double downsample;
@@ -206,6 +210,7 @@ class SvsLevelGeometry {
     required this.tileWidth,
     required this.tileLength,
     required this.compression,
+    this.photometricInterpretation = -1,
     required this.downsample,
   });
 
@@ -226,12 +231,19 @@ class SvsLevel {
   int get tileWidth => geometry.tileWidth;
   int get tileLength => geometry.tileLength;
   int get compression => geometry.compression;
+  int get photometricInterpretation => geometry.photometricInterpretation;
   double get downsample => geometry.downsample;
   int get tilesAcrossX => geometry.tilesAcrossX;
   int get tilesAcrossY => geometry.tilesAcrossY;
 
   bool get isJpeg => compression == ApCompression.newJpeg;
   bool get isJp2k => compression == ApCompression.jp2k;
+
+  /// Whether this level's JPEG tiles need [undoSpuriousYCbCr] applied after
+  /// decode — see that function's doc comment for why. Only relevant when
+  /// [isJpeg]; JP2K tiles are decoded by `openjpeg_ffi`, which has no
+  /// equivalent blind spot.
+  bool get needsYCbCrFix => isJpeg && photometricInterpretation == ApPhotometric.rgb;
 
   final TiffFile _file;
   final TiffIfd _ifd;
@@ -391,6 +403,9 @@ class SvsFile {
               tileWidth: tileWidth,
               tileLength: tileLength,
               compression: compression,
+              photometricInterpretation: ifd.hasTag(ApTag.photometricInterpretation)
+                  ? await ifd.readInt(ApTag.photometricInterpretation)
+                  : -1,
               downsample: baseWidth / width,
             ),
             file: tiff,
