@@ -107,11 +107,7 @@ class DiskTileCache {
     ByteData.sublistView(payload, 0, _headerBytes)
       ..setUint32(0, width, Endian.little)
       ..setUint32(4, height, Endian.little);
-    payload.setRange(
-      _headerBytes,
-      _headerBytes + rgbaBytes.length,
-      rgbaBytes,
-    );
+    payload.setRange(_headerBytes, _headerBytes + rgbaBytes.length, rgbaBytes);
 
     final file = File('${directory.path}/${_fileName(key)}');
     try {

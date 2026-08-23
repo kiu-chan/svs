@@ -188,11 +188,7 @@ class LodController extends ChangeNotifier {
             // JP2K tiles are always encoded at the full nominal tile-grid
             // size (unlike JPEG, a boundary tile can't come back cropped),
             // so `level.tileWidth/tileLength` is the correct buffer shape.
-            image = await _decodeRgba(
-              bytes,
-              level.tileWidth,
-              level.tileLength,
-            );
+            image = await _decodeRgba(bytes, level.tileWidth, level.tileLength);
           } else {
             // JPEG: the worker only spliced the standalone bytes — the
             // actual decode must happen here, `dart:ui`'s codec APIs only

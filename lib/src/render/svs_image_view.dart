@@ -586,9 +586,7 @@ class _AnnotationPainter extends CustomPainter {
     bool isDraft = false,
   }) {
     final baseColor = selected ? _selectionColor : annotation.color;
-    final strokeColor = isDraft
-        ? baseColor.withValues(alpha: 0.7)
-        : baseColor;
+    final strokeColor = isDraft ? baseColor.withValues(alpha: 0.7) : baseColor;
     final strokePaint = Paint()
       ..color = strokeColor
       ..style = PaintingStyle.stroke
@@ -643,15 +641,12 @@ class _AnnotationPainter extends CustomPainter {
           }
         }
         labelAnchor =
-            screenPoints.reduce((a, b) => a + b) / screenPoints.length.toDouble();
+            screenPoints.reduce((a, b) => a + b) /
+            screenPoints.length.toDouble();
     }
 
     if (labelAnchor != null) {
-      final measurement = measureAnnotation(
-        annotation,
-        mppX: mppX,
-        mppY: mppY,
-      );
+      final measurement = measureAnnotation(annotation, mppX: mppX, mppY: mppY);
       final length = measurement.lengthMicrons;
       if (length != null) {
         final area = measurement.areaMicronsSquared;

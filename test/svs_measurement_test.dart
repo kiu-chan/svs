@@ -49,7 +49,12 @@ void main() {
     test('polygon perimeter includes the implicit closing edge', () {
       final a = SvsAnnotation(
         type: SvsAnnotationShapeType.polygon,
-        points: const [Offset(0, 0), Offset(10, 0), Offset(10, 10), Offset(0, 10)],
+        points: const [
+          Offset(0, 0),
+          Offset(10, 0),
+          Offset(10, 10),
+          Offset(0, 10),
+        ],
       );
       final m = measureAnnotation(a, mppX: 1, mppY: 1);
       expect(m.lengthMicrons, closeTo(40, 1e-9)); // 4 sides of 10 microns

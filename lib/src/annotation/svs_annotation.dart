@@ -120,10 +120,7 @@ class SvsAnnotation {
       type: SvsAnnotationShapeType.values.byName(json['type'] as String),
       points: (json['points'] as List)
           .map(
-            (p) => Offset(
-              (p[0] as num).toDouble(),
-              (p[1] as num).toDouble(),
-            ),
+            (p) => Offset((p[0] as num).toDouble(), (p[1] as num).toDouble()),
           )
           .toList(),
       color: Color(json['color'] as int),
