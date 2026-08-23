@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  openjpeg_ffi:
+    name: openjpeg_ffi (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: packages/openjpeg_ffi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: dart pub get
+      # Compiles the vendored OpenJPEG sources via native_toolchain_c's
+      # per-platform toolchain resolver (MSVC / clang / gcc — no
+      # hook/build.dart changes needed per platform, by design) and decodes
+      # the committed test/fixtures/tile0.j2k codestream, comparing
+      # pixel-for-pixel against a Pillow-computed oracle.
+      - run: dart test
+
+  svs:
+    name: svs (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      # Real-file integration tests live in the sibling svs_example repo and
+      # need the (gitignored, multi-hundred-MB) sample_data/*.svs files, so
+      # they're not run here — every test in this package's own suite skips
+      # gracefully rather than failing when a real file isn't present (see
+      # each test file's `_skipReasonUnless` helper). Resolving and running
+      # this suite still exercises openjpeg_ffi's native build as a
+      # transitive dependency, proving the cross-platform toolchain wiring
+      # end-to-end.
+      - run: flutter test
