@@ -20,7 +20,11 @@ void main() {
     await tempDir.delete(recursive: true);
   });
 
-  List<TestTag> tiledLevelTags({required int width, required int height, required int tileSize}) {
+  List<TestTag> tiledLevelTags({
+    required int width,
+    required int height,
+    required int tileSize,
+  }) {
     final tilesX = (width / tileSize).ceil();
     final tilesY = (height / tileSize).ceil();
     final tileCount = tilesX * tilesY;

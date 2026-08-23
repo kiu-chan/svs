@@ -1,6 +1,6 @@
 name: svs
 description: "Streams and renders Aperio SVS whole-slide pathology images: pan/zoom, LOD tile streaming, JPEG & JPEG2000, no full-image load."
-version: 0.1.0
+version: 0.2.0
 homepage: https://github.com/kiu-chan/svs
 repository: https://github.com/kiu-chan/svs
 issue_tracker: https://github.com/kiu-chan/svs/issues
@@ -18,6 +18,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  image: ^4.9.2
   openjpeg_ffi: ^0.1.0
 
 dev_dependencies:

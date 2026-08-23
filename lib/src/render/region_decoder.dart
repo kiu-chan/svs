@@ -33,9 +33,7 @@ Future<ui.Image> readSvsRegion(
     );
   }
   if (width <= 0 || height <= 0) {
-    throw ArgumentError(
-      'width/height must be positive, got ${width}x$height',
-    );
+    throw ArgumentError('width/height must be positive, got ${width}x$height');
   }
 
   final lvl = svsFile.levels[level];

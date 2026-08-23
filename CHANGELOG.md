@@ -1,9 +1,17 @@
-## Unreleased
+## 0.2.0
 
 * `readSvsRegion`: crops an arbitrary rectangle of any pyramid level to a
   single composited image, stitching together only the tiles it overlaps.
   The rectangle may hang off the level's edges; the out-of-bounds part
   decodes transparent.
+* `encodeSvsImage`, `exportSvsRegion`, `exportAssociatedImage`,
+  `exportSvsLevel`: encode a decoded image (a crop, an associated image, or
+  a whole pyramid level) to PNG, JPEG, BMP, TIFF, or WebP bytes, via the new
+  `image` dependency. `exportSvsLevel` guards against accidentally
+  compositing/encoding a gigapixel level whole. Each has a `...ToFile`
+  counterpart (`exportSvsRegionToFile`, `exportAssociatedImageToFile`,
+  `exportSvsLevelToFile`) that writes straight to a path instead of
+  returning bytes.
 
 ## 0.1.0
 
