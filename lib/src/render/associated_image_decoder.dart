@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import '../errors.dart';
+import '../svs/aperio_tags.dart';
 import '../svs/svs_file.dart';
 
 /// Decodes [image] to a single composited [ui.Image] spanning its full
@@ -33,9 +34,13 @@ Future<ui.Image> decodeAssociatedImage(SvsAssociatedImage image) async {
 Future<ui.Image> _decodeJpegStrips(SvsAssociatedImage image) async {
   final stripCount = await image.stripCount;
   final rowsPerStrip = await image.rowsPerStrip;
-
-  final recorder = ui.PictureRecorder();
-  final canvas = ui.Canvas(recorder);
+  // Aperio writes these JPEG strips with TIFF PhotometricInterpretation=RGB
+  // — i.e. literal RGB samples, no YCbCr transform. `dart:ui`'s decoder has
+  // no visibility into that TIFF-level tag (it's outside the JPEG stream
+  // itself), so it always assumes YCbCr and applies an unwanted conversion.
+  // _undoSpuriousYCbCr reverses exactly that.
+  final needsRgbFix = image.photometricInterpretation == ApPhotometric.rgb;
+  final pixels = Uint8List(image.width * image.height * 4);
   var decodedAny = false;
 
   for (var i = 0; i < stripCount; i++) {
@@ -44,8 +49,14 @@ Future<ui.Image> _decodeJpegStrips(SvsAssociatedImage image) async {
     try {
       final codec = await ui.instantiateImageCodec(bytes);
       final frame = await codec.getNextFrame();
-      canvas.drawImage(frame.image, ui.Offset(0, (i * rowsPerStrip).toDouble()), ui.Paint());
+      final stripRgba = await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
       frame.image.dispose();
+      if (stripRgba == null) continue;
+
+      final stripBytes = stripRgba.buffer.asUint8List(stripRgba.offsetInBytes, stripRgba.lengthInBytes);
+      if (needsRgbFix) _undoSpuriousYCbCr(stripBytes);
+      final byteOffset = i * rowsPerStrip * image.width * 4;
+      pixels.setRange(byteOffset, byteOffset + stripBytes.length, stripBytes);
       decodedAny = true;
     } catch (_) {
       // Leave this band blank rather than letting one corrupt strip sink
@@ -57,11 +68,27 @@ Future<ui.Image> _decodeJpegStrips(SvsAssociatedImage image) async {
     throw SvsFormatException('Associated image (IFD ${image.ifdIndex}, ${image.kind}) has no decodable strips');
   }
 
-  final picture = recorder.endRecording();
-  try {
-    return await picture.toImage(image.width, image.height);
-  } finally {
-    picture.dispose();
+  final completer = Completer<ui.Image>();
+  ui.decodeImageFromPixels(pixels, image.width, image.height, ui.PixelFormat.rgba8888, completer.complete);
+  return completer.future;
+}
+
+/// Inverts the JPEG decoder's spurious RGB->YCbCr->RGB round trip in place
+/// on tightly-packed RGBA8888 bytes (alpha untouched). Re-running the
+/// forward RGB->YCbCr formula on the wrongly-decoded output is exactly the
+/// decoder's YCbCr->RGB step's inverse, so it recovers the true original
+/// samples (the formula's Y/Cb/Cr outputs land back on the true R/G/B).
+void _undoSpuriousYCbCr(Uint8List rgba) {
+  for (var i = 0; i < rgba.length; i += 4) {
+    final r = rgba[i].toDouble();
+    final g = rgba[i + 1].toDouble();
+    final b = rgba[i + 2].toDouble();
+    final y = 0.299 * r + 0.587 * g + 0.114 * b;
+    final cb = -0.168736 * r - 0.331264 * g + 0.5 * b + 128;
+    final cr = 0.5 * r - 0.418688 * g - 0.081312 * b + 128;
+    rgba[i] = y.clamp(0, 255).round();
+    rgba[i + 1] = cb.clamp(0, 255).round();
+    rgba[i + 2] = cr.clamp(0, 255).round();
   }
 }
 
