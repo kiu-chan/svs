@@ -29,7 +29,9 @@ Future<ui.Image> decodeAssociatedImage(SvsAssociatedImage image) async {
       'Associated image (IFD ${image.ifdIndex}, ${image.kind}) is not decodable — check isDecodable first',
     );
   }
-  return image.isJpeg ? _decodeJpegStrips(image) : _decodeRawRasterStrips(image);
+  return image.isJpeg
+      ? _decodeJpegStrips(image)
+      : _decodeRawRasterStrips(image);
 }
 
 Future<ui.Image> _decodeJpegStrips(SvsAssociatedImage image) async {
@@ -50,11 +52,16 @@ Future<ui.Image> _decodeJpegStrips(SvsAssociatedImage image) async {
     try {
       final codec = await ui.instantiateImageCodec(bytes);
       final frame = await codec.getNextFrame();
-      final stripRgba = await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      final stripRgba = await frame.image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      );
       frame.image.dispose();
       if (stripRgba == null) continue;
 
-      final stripBytes = stripRgba.buffer.asUint8List(stripRgba.offsetInBytes, stripRgba.lengthInBytes);
+      final stripBytes = stripRgba.buffer.asUint8List(
+        stripRgba.offsetInBytes,
+        stripRgba.lengthInBytes,
+      );
       if (needsRgbFix) undoSpuriousYCbCr(stripBytes);
       final byteOffset = i * rowsPerStrip * image.width * 4;
       pixels.setRange(byteOffset, byteOffset + stripBytes.length, stripBytes);
@@ -66,11 +73,19 @@ Future<ui.Image> _decodeJpegStrips(SvsAssociatedImage image) async {
   }
 
   if (!decodedAny) {
-    throw SvsFormatException('Associated image (IFD ${image.ifdIndex}, ${image.kind}) has no decodable strips');
+    throw SvsFormatException(
+      'Associated image (IFD ${image.ifdIndex}, ${image.kind}) has no decodable strips',
+    );
   }
 
   final completer = Completer<ui.Image>();
-  ui.decodeImageFromPixels(pixels, image.width, image.height, ui.PixelFormat.rgba8888, completer.complete);
+  ui.decodeImageFromPixels(
+    pixels,
+    image.width,
+    image.height,
+    ui.PixelFormat.rgba8888,
+    completer.complete,
+  );
   return completer.future;
 }
 
@@ -89,10 +104,18 @@ Future<ui.Image> _decodeRawRasterStrips(SvsAssociatedImage image) async {
   }
 
   if (!decodedAny) {
-    throw SvsFormatException('Associated image (IFD ${image.ifdIndex}, ${image.kind}) has no decodable strips');
+    throw SvsFormatException(
+      'Associated image (IFD ${image.ifdIndex}, ${image.kind}) has no decodable strips',
+    );
   }
 
   final completer = Completer<ui.Image>();
-  ui.decodeImageFromPixels(pixels, image.width, image.height, ui.PixelFormat.rgba8888, completer.complete);
+  ui.decodeImageFromPixels(
+    pixels,
+    image.width,
+    image.height,
+    ui.PixelFormat.rgba8888,
+    completer.complete,
+  );
   return completer.future;
 }

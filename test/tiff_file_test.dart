@@ -45,9 +45,18 @@ void main() {
         order: Endian.little,
         ifds: [
           [
-            TestTag.ints(256, TiffType.short, [100], Endian.little), // ImageWidth, inline
-            TestTag.ascii(270, 'Aperio Test|AppMag = 20'), // ImageDescription, out-of-line
-            TestTag.ints(324, TiffType.long, [1000, 2000, 3000], Endian.little), // TileOffsets-like, out-of-line
+            TestTag.ints(256, TiffType.short, [
+              100,
+            ], Endian.little), // ImageWidth, inline
+            TestTag.ascii(
+              270,
+              'Aperio Test|AppMag = 20',
+            ), // ImageDescription, out-of-line
+            TestTag.ints(324, TiffType.long, [
+              1000,
+              2000,
+              3000,
+            ], Endian.little), // TileOffsets-like, out-of-line
           ],
         ],
       );
@@ -76,9 +85,15 @@ void main() {
       expect(await tiff.ifds[0].readInt(999, fallback: 42), 42);
     });
 
-    test('readInt throws when the tag is absent and no fallback given', () async {
-      expect(() => tiff.ifds[0].readInt(999), throwsA(isA<SvsFormatException>()));
-    });
+    test(
+      'readInt throws when the tag is absent and no fallback given',
+      () async {
+        expect(
+          () => tiff.ifds[0].readInt(999),
+          throwsA(isA<SvsFormatException>()),
+        );
+      },
+    );
   });
 
   test('classic TIFF, big-endian decodes the same as little-endian', () async {
@@ -105,7 +120,10 @@ void main() {
       ifds: [
         [
           // 2 x 8 bytes = 16 bytes, exceeds the 8-byte inline field.
-          TestTag.ints(324, TiffType.long8, [5000000000, 6000000000], Endian.little),
+          TestTag.ints(324, TiffType.long8, [
+            5000000000,
+            6000000000,
+          ], Endian.little),
         ],
       ],
     );
@@ -119,8 +137,12 @@ void main() {
       bigTiff: false,
       order: Endian.little,
       ifds: [
-        [TestTag.ints(256, TiffType.short, [100], Endian.little)],
-        [TestTag.ints(256, TiffType.short, [25], Endian.little)],
+        [
+          TestTag.ints(256, TiffType.short, [100], Endian.little),
+        ],
+        [
+          TestTag.ints(256, TiffType.short, [25], Endian.little),
+        ],
       ],
     );
     final tiff = await openBytes(bytes);
@@ -134,8 +156,12 @@ void main() {
       bigTiff: false,
       order: Endian.little,
       ifds: [
-        [TestTag.ints(256, TiffType.short, [1], Endian.little)],
-        [TestTag.ints(256, TiffType.short, [2], Endian.little)],
+        [
+          TestTag.ints(256, TiffType.short, [1], Endian.little),
+        ],
+        [
+          TestTag.ints(256, TiffType.short, [2], Endian.little),
+        ],
       ],
       nextIfdIndexOverride: {1: 0}, // IFD1 points back at IFD0
     );
@@ -152,40 +178,55 @@ void main() {
     await expectLater(openBytes(bytes), throwsA(isA<SvsFormatException>()));
   });
 
-  test('concurrent readBytes calls do not interleave on the shared file handle', () async {
-    // readBytes does setPosition() then read() as two separate awaits on one
-    // shared RandomAccessFile — without serializing them, concurrent callers
-    // (e.g. many tiles requested at once while panning) can interleave their
-    // setPosition/read pairs and silently read each other's bytes at the
-    // wrong offset. This is independent of TIFF semantics, so it's tested
-    // directly against readBytes on raw appended payloads.
-    final header = buildTiff(
-      bigTiff: false,
-      order: Endian.little,
-      ifds: [
-        [TestTag.ints(256, TiffType.short, [1], Endian.little)],
-      ],
-    );
-    const payloadCount = 50;
-    const payloadSize = 64;
-    final payloads = <Uint8List>[];
-    final builder = BytesBuilder()..add(header);
-    for (var i = 0; i < payloadCount; i++) {
-      final payload = Uint8List(payloadSize)..fillRange(0, payloadSize, i);
-      payloads.add(payload);
-      builder.add(payload);
-    }
-    final tiff = await openBytes(builder.toBytes());
-    final offsets = List.generate(payloadCount, (i) => header.length + i * payloadSize);
+  test(
+    'concurrent readBytes calls do not interleave on the shared file handle',
+    () async {
+      // readBytes does setPosition() then read() as two separate awaits on one
+      // shared RandomAccessFile — without serializing them, concurrent callers
+      // (e.g. many tiles requested at once while panning) can interleave their
+      // setPosition/read pairs and silently read each other's bytes at the
+      // wrong offset. This is independent of TIFF semantics, so it's tested
+      // directly against readBytes on raw appended payloads.
+      final header = buildTiff(
+        bigTiff: false,
+        order: Endian.little,
+        ifds: [
+          [
+            TestTag.ints(256, TiffType.short, [1], Endian.little),
+          ],
+        ],
+      );
+      const payloadCount = 50;
+      const payloadSize = 64;
+      final payloads = <Uint8List>[];
+      final builder = BytesBuilder()..add(header);
+      for (var i = 0; i < payloadCount; i++) {
+        final payload = Uint8List(payloadSize)..fillRange(0, payloadSize, i);
+        payloads.add(payload);
+        builder.add(payload);
+      }
+      final tiff = await openBytes(builder.toBytes());
+      final offsets = List.generate(
+        payloadCount,
+        (i) => header.length + i * payloadSize,
+      );
 
-    // Request in reverse order, all at once, to maximize the chance of
-    // exposing interleaving if the serialization regresses.
-    final indices = List.generate(payloadCount, (i) => payloadCount - 1 - i);
-    final futures = [for (final i in indices) tiff.readBytes(offsets[i], payloadSize)];
-    final results = await Future.wait(futures);
+      // Request in reverse order, all at once, to maximize the chance of
+      // exposing interleaving if the serialization regresses.
+      final indices = List.generate(payloadCount, (i) => payloadCount - 1 - i);
+      final futures = [
+        for (final i in indices) tiff.readBytes(offsets[i], payloadSize),
+      ];
+      final results = await Future.wait(futures);
 
-    for (var k = 0; k < payloadCount; k++) {
-      expect(results[k], payloads[indices[k]], reason: 'payload ${indices[k]} came back wrong or from the wrong offset');
-    }
-  });
+      for (var k = 0; k < payloadCount; k++) {
+        expect(
+          results[k],
+          payloads[indices[k]],
+          reason:
+              'payload ${indices[k]} came back wrong or from the wrong offset',
+        );
+      }
+    },
+  );
 }

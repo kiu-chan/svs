@@ -20,7 +20,11 @@ const _firstDataCode = 258;
 /// it as a sanity check, since a corrupt stream can otherwise decode to a
 /// plausible-looking but wrong-length buffer.
 Uint8List decodeTiffLzw(Uint8List data, int expectedLength) {
-  final dict = List<Uint8List>.generate(_firstDataCode, (i) => Uint8List.fromList([i]), growable: true);
+  final dict = List<Uint8List>.generate(
+    _firstDataCode,
+    (i) => Uint8List.fromList([i]),
+    growable: true,
+  );
   var codeWidth = 9;
   Uint8List? oldEntry;
 
@@ -57,7 +61,9 @@ Uint8List decodeTiffLzw(Uint8List data, int expectedLength) {
     } else if (code == dict.length && oldEntry != null) {
       entry = Uint8List.fromList([...oldEntry, oldEntry[0]]);
     } else {
-      throw SvsFormatException('Corrupt LZW stream: code $code is not valid at this point');
+      throw SvsFormatException(
+        'Corrupt LZW stream: code $code is not valid at this point',
+      );
     }
     out.add(entry);
 
@@ -84,7 +90,11 @@ Uint8List decodeTiffLzw(Uint8List data, int expectedLength) {
 
   final result = out.toBytes();
   if (result.length < expectedLength) {
-    throw SvsFormatException('Corrupt LZW stream: decoded ${result.length} bytes, expected $expectedLength');
+    throw SvsFormatException(
+      'Corrupt LZW stream: decoded ${result.length} bytes, expected $expectedLength',
+    );
   }
-  return result.length == expectedLength ? result : result.sublist(0, expectedLength);
+  return result.length == expectedLength
+      ? result
+      : result.sublist(0, expectedLength);
 }

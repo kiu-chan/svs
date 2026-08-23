@@ -48,7 +48,8 @@ class SvsImageView extends StatefulWidget {
   State<SvsImageView> createState() => _SvsImageViewState();
 }
 
-class _SvsImageViewState extends State<SvsImageView> with WidgetsBindingObserver {
+class _SvsImageViewState extends State<SvsImageView>
+    with WidgetsBindingObserver {
   late final TileCache _cache = widget.cache ?? TileCache();
   bool get _ownsCache => widget.cache == null;
 
@@ -91,15 +92,21 @@ class _SvsImageViewState extends State<SvsImageView> with WidgetsBindingObserver
   void didHaveMemoryPressure() {
     _cache.clear();
     if (!mounted) return;
-    setState(() {}); // the tiles just disposed were still on screen — repaint placeholders instead of a stale-image crash
+    setState(
+      () {},
+    ); // the tiles just disposed were still on screen — repaint placeholders instead of a stale-image crash
     final viewportSize = _viewportSize;
-    if (viewportSize != null) _lod.flushNow(viewportSize, _scale, _origin); // re-fetch what's currently visible
+    // re-fetch what's currently visible
+    if (viewportSize != null) {
+      _lod.flushNow(viewportSize, _scale, _origin);
+    }
   }
 
   Future<void> _loadOverview() async {
     SvsAssociatedImage? thumbnail;
     for (final associated in widget.svsFile.associatedImages) {
-      if (associated.kind == AssociatedImageKind.thumbnail && associated.isDecodable) {
+      if (associated.kind == AssociatedImageKind.thumbnail &&
+          associated.isDecodable) {
         thumbnail = associated;
         break;
       }
@@ -129,12 +136,18 @@ class _SvsImageViewState extends State<SvsImageView> with WidgetsBindingObserver
 
   void _initializeView(Size viewportSize) {
     final level0 = widget.svsFile.levels.first;
-    final fitScale = math.min(viewportSize.width / level0.width, viewportSize.height / level0.height);
+    final fitScale = math.min(
+      viewportSize.width / level0.width,
+      viewportSize.height / level0.height,
+    );
     _minScale = fitScale;
     _scale = fitScale;
     final contentWidth = viewportSize.width / _scale;
     final contentHeight = viewportSize.height / _scale;
-    _origin = Offset((level0.width - contentWidth) / 2, (level0.height - contentHeight) / 2);
+    _origin = Offset(
+      (level0.width - contentWidth) / 2,
+      (level0.height - contentHeight) / 2,
+    );
     _lod.flushNow(viewportSize, _scale, _origin);
   }
 
@@ -185,7 +198,10 @@ class _SvsImageViewState extends State<SvsImageView> with WidgetsBindingObserver
     required double scaleMultiplier,
   }) {
     final focalLevel0 = startOrigin + startFocalPoint / startScale;
-    final newScale = (startScale * scaleMultiplier).clamp(_minScale, widget.maxScale);
+    final newScale = (startScale * scaleMultiplier).clamp(
+      _minScale,
+      widget.maxScale,
+    );
     final newOrigin = focalLevel0 - currentFocalPoint / newScale;
     setState(() {
       _scale = newScale;
@@ -200,7 +216,9 @@ class _SvsImageViewState extends State<SvsImageView> with WidgetsBindingObserver
     final viewportSize = _viewportSize;
     if (viewportSize == null) return;
     setState(() {
-      _origin = level0Point - Offset(viewportSize.width, viewportSize.height) / (2 * _scale);
+      _origin =
+          level0Point -
+          Offset(viewportSize.width, viewportSize.height) / (2 * _scale);
     });
     _lod.flushNow(viewportSize, _scale, _origin);
   }
@@ -233,14 +251,23 @@ class _SvsImageViewState extends State<SvsImageView> with WidgetsBindingObserver
                   onScaleEnd: _onScaleEnd,
                   child: CustomPaint(
                     size: viewportSize,
-                    painter: _TilePainter(svsFile: widget.svsFile, cache: _cache, scale: _scale, origin: _origin, maxUpsample: widget.maxUpsample),
+                    painter: _TilePainter(
+                      svsFile: widget.svsFile,
+                      cache: _cache,
+                      scale: _scale,
+                      origin: _origin,
+                      maxUpsample: widget.maxUpsample,
+                    ),
                   ),
                 ),
               ),
               Positioned(
                 left: 12,
                 bottom: 12,
-                child: _HudOverlay(scale: _scale, mppX: widget.svsFile.metadata.mppX),
+                child: _HudOverlay(
+                  scale: _scale,
+                  mppX: widget.svsFile.metadata.mppX,
+                ),
               ),
               if (overview != null)
                 Positioned(
@@ -271,7 +298,13 @@ class _TilePainter extends CustomPainter {
   final Offset origin;
   final double maxUpsample;
 
-  _TilePainter({required this.svsFile, required this.cache, required this.scale, required this.origin, required this.maxUpsample});
+  _TilePainter({
+    required this.svsFile,
+    required this.cache,
+    required this.scale,
+    required this.origin,
+    required this.maxUpsample,
+  });
 
   // Anti-aliased edges on abutting tile rects each blend independently
   // against whatever was already painted, which — even when two tiles'
@@ -293,7 +326,11 @@ class _TilePainter extends CustomPainter {
     canvas.drawRect(Offset.zero & size, _placeholderPaint);
 
     final levels = svsFile.levels;
-    final levelIndex = selectLevel(levels.map((l) => l.geometry).toList(growable: false), scale, maxUpsample: maxUpsample);
+    final levelIndex = selectLevel(
+      levels.map((l) => l.geometry).toList(growable: false),
+      scale,
+      maxUpsample: maxUpsample,
+    );
     final level = levels[levelIndex];
 
     // While `level`'s own tiles are still decoding, paint whatever
@@ -313,10 +350,24 @@ class _TilePainter extends CustomPainter {
     final visible = computeVisibleTiles(level.geometry, size, scale, origin);
     for (var ty = visible.minTy; ty <= visible.maxTy; ty++) {
       for (var tx = visible.minTx; tx <= visible.maxTx; tx++) {
-        final image = cache.get(TileCacheKey(level: level.index, tileX: tx, tileY: ty));
-        if (image == null) continue; // background fill / fallback layer shows through
-        final src = Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
-        canvas.drawImageRect(image, src, _tileScreenRect(level, tx, ty), _imagePaint);
+        final image = cache.get(
+          TileCacheKey(level: level.index, tileX: tx, tileY: ty),
+        );
+        if (image == null) {
+          continue; // background fill / fallback layer shows through
+        }
+        final src = Rect.fromLTWH(
+          0,
+          0,
+          image.width.toDouble(),
+          image.height.toDouble(),
+        );
+        canvas.drawImageRect(
+          image,
+          src,
+          _tileScreenRect(level, tx, ty),
+          _imagePaint,
+        );
       }
     }
   }
@@ -325,7 +376,11 @@ class _TilePainter extends CustomPainter {
   /// it) that has at least one visible tile decoded — checked coarser
   /// (index+1, +2, …) before finer, since "just zoomed in from a
   /// fully-loaded overview" is the common case this exists for.
-  int? _findFallbackLevelIndex(List<SvsLevel> levels, int targetIndex, Size size) {
+  int? _findFallbackLevelIndex(
+    List<SvsLevel> levels,
+    int targetIndex,
+    Size size,
+  ) {
     for (var d = 1; d < levels.length; d++) {
       for (final candidate in [targetIndex + d, targetIndex - d]) {
         if (candidate < 0 || candidate >= levels.length) continue;
@@ -333,7 +388,9 @@ class _TilePainter extends CustomPainter {
         final visible = computeVisibleTiles(geometry, size, scale, origin);
         for (var ty = visible.minTy; ty <= visible.maxTy; ty++) {
           for (var tx = visible.minTx; tx <= visible.maxTx; tx++) {
-            if (cache.contains(TileCacheKey(level: candidate, tileX: tx, tileY: ty))) {
+            if (cache.contains(
+              TileCacheKey(level: candidate, tileX: tx, tileY: ty),
+            )) {
               return candidate;
             }
           }
@@ -358,7 +415,12 @@ class _TilePainter extends CustomPainter {
     final level0Height = level.tileLength * level.downsample;
     final left = (level0X - origin.dx) * scale;
     final top = (level0Y - origin.dy) * scale;
-    return Rect.fromLTWH(left, top, level0Width * scale + _seamGuard, level0Height * scale + _seamGuard);
+    return Rect.fromLTWH(
+      left,
+      top,
+      level0Width * scale + _seamGuard,
+      level0Height * scale + _seamGuard,
+    );
   }
 
   @override
@@ -381,19 +443,35 @@ class _HudOverlay extends StatelessWidget {
     final bar = mpp == null ? null : _pickScaleBar(mpp / scale);
 
     return DecoratedBox(
-      decoration: BoxDecoration(color: const Color(0x99000000), borderRadius: BorderRadius.circular(6)),
+      decoration: BoxDecoration(
+        color: const Color(0x99000000),
+        borderRadius: BorderRadius.circular(6),
+      ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             if (bar != null) ...[
-              CustomPaint(size: Size(bar.pixelWidth, 10), painter: _ScaleBarPainter()),
+              CustomPaint(
+                size: Size(bar.pixelWidth, 10),
+                painter: _ScaleBarPainter(),
+              ),
               const SizedBox(width: 6),
-              Text(bar.label, style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 12)),
+              Text(
+                bar.label,
+                style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 12),
+              ),
               const SizedBox(width: 12),
             ],
-            Text('$zoomPercent%', style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 12, fontWeight: FontWeight.bold)),
+            Text(
+              '$zoomPercent%',
+              style: const TextStyle(
+                color: Color(0xFFFFFFFF),
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
           ],
         ),
       ),
@@ -410,7 +488,11 @@ class _ScaleBarPainter extends CustomPainter {
     final midY = size.height / 2;
     canvas.drawLine(Offset(0, midY), Offset(size.width, midY), paint);
     canvas.drawLine(Offset(0, 0), Offset(0, size.height), paint);
-    canvas.drawLine(Offset(size.width, 0), Offset(size.width, size.height), paint);
+    canvas.drawLine(
+      Offset(size.width, 0),
+      Offset(size.width, size.height),
+      paint,
+    );
   }
 
   @override
@@ -423,10 +505,32 @@ typedef _ScaleBarSpec = ({double pixelWidth, String label});
 /// whose on-screen width — given [umPerScreenPixel] microns per screen
 /// pixel at the current zoom — fits under [maxBarWidth], preferring the
 /// largest one that still fits so the bar reads clearly.
-_ScaleBarSpec? _pickScaleBar(double umPerScreenPixel, {double maxBarWidth = 120}) {
+_ScaleBarSpec? _pickScaleBar(
+  double umPerScreenPixel, {
+  double maxBarWidth = 120,
+}) {
   if (!umPerScreenPixel.isFinite || umPerScreenPixel <= 0) return null;
 
-  const niceValuesUm = <double>[0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
+  const niceValuesUm = <double>[
+    0.1,
+    0.2,
+    0.5,
+    1,
+    2,
+    5,
+    10,
+    20,
+    50,
+    100,
+    200,
+    500,
+    1000,
+    2000,
+    5000,
+    10000,
+    20000,
+    50000,
+  ];
 
   var chosen = niceValuesUm.first;
   for (final value in niceValuesUm) {
@@ -470,7 +574,9 @@ class _Minimap extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final aspect = level0Width / level0Height;
-    final boxSize = aspect >= 1 ? Size(_maxDimension, _maxDimension / aspect) : Size(_maxDimension * aspect, _maxDimension);
+    final boxSize = aspect >= 1
+        ? Size(_maxDimension, _maxDimension / aspect)
+        : Size(_maxDimension * aspect, _maxDimension);
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -525,7 +631,12 @@ class _MinimapPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final imageRect = Rect.fromLTWH(0, 0, size.width, size.height);
-    canvas.drawImageRect(image, Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()), imageRect, Paint());
+    canvas.drawImageRect(
+      image,
+      Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+      imageRect,
+      Paint(),
+    );
 
     final xRatio = size.width / level0Width;
     final yRatio = size.height / level0Height;

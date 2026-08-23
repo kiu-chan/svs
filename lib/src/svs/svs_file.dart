@@ -76,10 +76,9 @@ class SvsAssociatedImage {
     required this.samplesPerPixel,
     required this.bitsPerSample,
     required this.predictor,
-    required TiffFile file,
-    required TiffIfd ifd,
-  }) : _file = file,
-       _ifd = ifd;
+    required this._file,
+    required this._ifd,
+  });
 
   Future<void> _ensureStripTablesLoaded() async {
     if (_stripOffsets != null) return;
@@ -94,7 +93,9 @@ class SvsAssociatedImage {
     _stripOffsets = offsets;
     _stripByteCounts = byteCounts;
     // Absent RowsPerStrip means the whole image is one strip (TIFF default).
-    _rowsPerStrip = _ifd.hasTag(ApTag.rowsPerStrip) ? await _ifd.readInt(ApTag.rowsPerStrip) : height;
+    _rowsPerStrip = _ifd.hasTag(ApTag.rowsPerStrip)
+        ? await _ifd.readInt(ApTag.rowsPerStrip)
+        : height;
   }
 
   Future<Uint8List?> _loadJpegTables() async {
@@ -171,11 +172,25 @@ class SvsAssociatedImage {
 
     final rows = _rowsInStrip(i);
     final raw = await _file.readBytes(_stripOffsets![i], byteCount);
-    final samples = decompressTiffStrip(compression, raw, expectedLength: width * rows * samplesPerPixel);
+    final samples = decompressTiffStrip(
+      compression,
+      raw,
+      expectedLength: width * rows * samplesPerPixel,
+    );
     if (predictor == 2) {
-      undoHorizontalPredictor(samples, width: width, height: rows, samplesPerPixel: samplesPerPixel);
+      undoHorizontalPredictor(
+        samples,
+        width: width,
+        height: rows,
+        samplesPerPixel: samplesPerPixel,
+      );
     }
-    return expandRgbToRgba(samples, width: width, height: rows, samplesPerPixel: samplesPerPixel);
+    return expandRgbToRgba(
+      samples,
+      width: width,
+      height: rows,
+      samplesPerPixel: samplesPerPixel,
+    );
   }
 
   int _rowsInStrip(int i) {
@@ -239,11 +254,13 @@ class SvsLevel {
   bool get isJpeg => compression == ApCompression.newJpeg;
   bool get isJp2k => compression == ApCompression.jp2k;
 
-  /// Whether this level's JPEG tiles need [undoSpuriousYCbCr] applied after
-  /// decode — see that function's doc comment for why. Only relevant when
+  /// Whether this level's JPEG tiles need `undoSpuriousYCbCr` (in
+  /// `render/ycbcr_fix.dart`) applied after decode — see that function's doc
+  /// comment for why. Only relevant when
   /// [isJpeg]; JP2K tiles are decoded by `openjpeg_ffi`, which has no
   /// equivalent blind spot.
-  bool get needsYCbCrFix => isJpeg && photometricInterpretation == ApPhotometric.rgb;
+  bool get needsYCbCrFix =>
+      isJpeg && photometricInterpretation == ApPhotometric.rgb;
 
   final TiffFile _file;
   final TiffIfd _ifd;
@@ -253,7 +270,7 @@ class SvsLevel {
   Uint8List? _jpegTables;
   bool _jpegTablesLoaded = false;
 
-  SvsLevel._({required this.geometry, required TiffFile file, required TiffIfd ifd}) : _file = file, _ifd = ifd;
+  SvsLevel._({required this.geometry, required this._file, required this._ifd});
 
   Future<void> _ensureTileTablesLoaded() async {
     if (_tileOffsets != null) return;
@@ -289,7 +306,9 @@ class SvsLevel {
     final tilesX = tilesAcrossX;
     final tilesY = tilesAcrossY;
     if (tx < 0 || tx >= tilesX || ty < 0 || ty >= tilesY) {
-      throw SvsFormatException('Tile ($tx,$ty) out of range for level $index (${tilesX}x$tilesY tiles)');
+      throw SvsFormatException(
+        'Tile ($tx,$ty) out of range for level $index (${tilesX}x$tilesY tiles)',
+      );
     }
 
     final i = ty * tilesX + tx;
@@ -324,9 +343,19 @@ class SvsLevel {
     try {
       decoded = decodeJ2k(rawTile);
     } on Jp2kDecodeException catch (e) {
-      throw TileIoException(index, tx, ty, 'JPEG2000 decode failed: ${e.message}');
+      throw TileIoException(
+        index,
+        tx,
+        ty,
+        'JPEG2000 decode failed: ${e.message}',
+      );
     }
-    return expandRgbToRgba(decoded.pixels, width: decoded.width, height: decoded.height, samplesPerPixel: decoded.numComponents);
+    return expandRgbToRgba(
+      decoded.pixels,
+      width: decoded.width,
+      height: decoded.height,
+      samplesPerPixel: decoded.numComponents,
+    );
   }
 }
 
@@ -350,12 +379,12 @@ class SvsFile {
   final SvsMetadata metadata;
 
   SvsFile._({
-    required TiffFile tiff,
+    required this._tiff,
     required this.path,
     required this.levels,
     required this.associatedImages,
     required this.metadata,
-  }) : _tiff = tiff;
+  });
 
   static Future<SvsFile> open(String path) async {
     final raf = await File(path).open(mode: FileMode.read);
@@ -386,13 +415,17 @@ class SvsFile {
 
     for (var i = 0; i < tiff.ifds.length; i++) {
       final ifd = tiff.ifds[i];
-      final isTiled = ifd.hasTag(ApTag.tileWidth) && ifd.hasTag(ApTag.tileLength);
+      final isTiled =
+          ifd.hasTag(ApTag.tileWidth) && ifd.hasTag(ApTag.tileLength);
       final width = await ifd.readInt(ApTag.imageWidth);
       final height = await ifd.readInt(ApTag.imageLength);
       final description = await ifd.readAscii(ApTag.imageDescription);
 
       if (isTiled) {
-        final compression = await ifd.readInt(ApTag.compression, fallback: ApCompression.newJpeg);
+        final compression = await ifd.readInt(
+          ApTag.compression,
+          fallback: ApCompression.newJpeg,
+        );
         if (!_supportedLevelCompressions.contains(compression)) {
           throw SvsUnsupportedCompressionError(
             compression,
@@ -413,7 +446,8 @@ class SvsFile {
               tileWidth: tileWidth,
               tileLength: tileLength,
               compression: compression,
-              photometricInterpretation: ifd.hasTag(ApTag.photometricInterpretation)
+              photometricInterpretation:
+                  ifd.hasTag(ApTag.photometricInterpretation)
                   ? await ifd.readInt(ApTag.photometricInterpretation)
                   : -1,
               downsample: baseWidth / width,
@@ -438,12 +472,19 @@ class SvsFile {
             // bit/sample, Predictor=1 (none). PhotometricInterpretation has
             // no real default; -1 stands for "absent", which isDecodable
             // correctly treats as not-RGB.
-            photometricInterpretation: ifd.hasTag(ApTag.photometricInterpretation)
+            photometricInterpretation:
+                ifd.hasTag(ApTag.photometricInterpretation)
                 ? await ifd.readInt(ApTag.photometricInterpretation)
                 : -1,
-            samplesPerPixel: ifd.hasTag(ApTag.samplesPerPixel) ? await ifd.readInt(ApTag.samplesPerPixel) : 1,
-            bitsPerSample: ifd.hasTag(ApTag.bitsPerSample) ? await ifd.readInts(ApTag.bitsPerSample) : const [1],
-            predictor: ifd.hasTag(ApTag.predictor) ? await ifd.readInt(ApTag.predictor) : 1,
+            samplesPerPixel: ifd.hasTag(ApTag.samplesPerPixel)
+                ? await ifd.readInt(ApTag.samplesPerPixel)
+                : 1,
+            bitsPerSample: ifd.hasTag(ApTag.bitsPerSample)
+                ? await ifd.readInts(ApTag.bitsPerSample)
+                : const [1],
+            predictor: ifd.hasTag(ApTag.predictor)
+                ? await ifd.readInt(ApTag.predictor)
+                : 1,
             file: tiff,
             ifd: ifd,
           ),
@@ -452,10 +493,18 @@ class SvsFile {
     }
 
     if (levels.isEmpty) {
-      throw const SvsFormatException('No tiled pyramid levels found — not a valid whole-slide TIFF');
+      throw const SvsFormatException(
+        'No tiled pyramid levels found — not a valid whole-slide TIFF',
+      );
     }
 
-    return SvsFile._(tiff: tiff, path: path, levels: levels, associatedImages: associated, metadata: metadata);
+    return SvsFile._(
+      tiff: tiff,
+      path: path,
+      levels: levels,
+      associatedImages: associated,
+      metadata: metadata,
+    );
   }
 
   static AssociatedImageKind _classifyAssociatedImage(String? description) {
@@ -467,14 +516,18 @@ class SvsFile {
 
   Future<Uint8List> readTileJpegBytes(int level, int tx, int ty) {
     if (level < 0 || level >= levels.length) {
-      throw SvsFormatException('Level $level out of range (have ${levels.length} levels)');
+      throw SvsFormatException(
+        'Level $level out of range (have ${levels.length} levels)',
+      );
     }
     return levels[level].readTileJpegBytes(tx, ty);
   }
 
   Future<Uint8List> readTileRgba(int level, int tx, int ty) {
     if (level < 0 || level >= levels.length) {
-      throw SvsFormatException('Level $level out of range (have ${levels.length} levels)');
+      throw SvsFormatException(
+        'Level $level out of range (have ${levels.length} levels)',
+      );
     }
     return levels[level].readTileRgba(tx, ty);
   }

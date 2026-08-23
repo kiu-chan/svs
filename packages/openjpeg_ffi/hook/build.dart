@@ -7,7 +7,9 @@ import 'package:hooks/hooks.dart';
 void main(List<String> args) async {
   await build(args, (input, output) async {
     final packageName = input.packageName;
-    final vendorDir = Directory.fromUri(input.packageRoot.resolve('src/vendor/openjp2/'));
+    final vendorDir = Directory.fromUri(
+      input.packageRoot.resolve('src/vendor/openjp2/'),
+    );
     final vendorSources = vendorDir
         .listSync()
         .whereType<File>()

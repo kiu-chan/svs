@@ -1,7 +1,14 @@
 name: openjpeg_ffi
-description: "OpenJPEG FFI bindings for decoding JPEG2000 codestreams, built for svs."
-version: 0.0.1
-publish_to: none
+description: "Dart FFI bindings to OpenJPEG for decoding raw JPEG2000 codestreams, built via native-assets — no manual native setup required."
+version: 0.1.0
+homepage: https://github.com/kiu-chan/svs/tree/main/packages/openjpeg_ffi
+repository: https://github.com/kiu-chan/svs
+issue_tracker: https://github.com/kiu-chan/svs/issues
+topics:
+  - ffi
+  - jpeg2000
+  - image
+  - codec
 
 environment:
   sdk: ^3.12.2

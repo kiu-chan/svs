@@ -62,7 +62,10 @@ class LodController extends ChangeNotifier {
   /// messages every frame.
   void onViewportChanged(Size viewportSize, double scale, Offset origin) {
     _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 80), () => _refreshTiles(viewportSize, scale, origin));
+    _debounce = Timer(
+      const Duration(milliseconds: 80),
+      () => _refreshTiles(viewportSize, scale, origin),
+    );
   }
 
   /// Same as [onViewportChanged] but skips the debounce — call at
@@ -76,30 +79,50 @@ class LodController extends ChangeNotifier {
 
   void _refreshTiles(Size viewportSize, double scale, Offset origin) {
     final levels = svsFile.levels;
-    final levelIndex = selectLevel(levels.map((l) => l.geometry).toList(growable: false), scale, maxUpsample: maxUpsample);
+    final levelIndex = selectLevel(
+      levels.map((l) => l.geometry).toList(growable: false),
+      scale,
+      maxUpsample: maxUpsample,
+    );
     final level = levels[levelIndex];
     // The strictly-on-screen range vs. the range expanded by the prefetch
     // margin — on-screen tiles are routed to the "visible" worker so they
     // never queue behind prefetch-margin ones (see TileWorkerPool).
-    final core = computeVisibleTiles(level.geometry, viewportSize, scale, origin);
-    final expanded = computeVisibleTiles(level.geometry, viewportSize, scale, origin, margin: prefetchMargin);
+    final core = computeVisibleTiles(
+      level.geometry,
+      viewportSize,
+      scale,
+      origin,
+    );
+    final expanded = computeVisibleTiles(
+      level.geometry,
+      viewportSize,
+      scale,
+      origin,
+      margin: prefetchMargin,
+    );
     _wanted = expanded;
 
     final wantedKeys = <TileCacheKey>{
       for (var ty = expanded.minTy; ty <= expanded.maxTy; ty++)
-        for (var tx = expanded.minTx; tx <= expanded.maxTx; tx++) TileCacheKey(level: level.index, tileX: tx, tileY: ty),
+        for (var tx = expanded.minTx; tx <= expanded.maxTx; tx++)
+          TileCacheKey(level: level.index, tileX: tx, tileY: ty),
     };
 
     // Anything still in flight for a tile we no longer want (scrolled out
     // of range, or the target level changed) gets actively cancelled —
     // otherwise it'd keep occupying a worker and consuming bandwidth for a
     // result nobody will use.
-    final toCancel = _inFlight.entries.where((entry) => !wantedKeys.contains(entry.key)).toList();
+    final toCancel = _inFlight.entries
+        .where((entry) => !wantedKeys.contains(entry.key))
+        .toList();
     for (final entry in toCancel) {
       _inFlight.remove(entry.key);
       final requestId = entry.value;
       if (requestId != null) {
-        unawaited(poolFuture.then((pool) => pool.cancel(requestId), onError: (_) {}));
+        unawaited(
+          poolFuture.then((pool) => pool.cancel(requestId), onError: (_) {}),
+        );
       }
     }
 
@@ -108,8 +131,20 @@ class LodController extends ChangeNotifier {
         final key = TileCacheKey(level: level.index, tileX: tx, tileY: ty);
         if (cache.contains(key) || _inFlight.containsKey(key)) continue;
         _inFlight[key] = null;
-        final isCore = tx >= core.minTx && tx <= core.maxTx && ty >= core.minTy && ty <= core.maxTy;
-        unawaited(_decodeTile(level, tx, ty, key, isCore ? TilePriority.visible : TilePriority.prefetch));
+        final isCore =
+            tx >= core.minTx &&
+            tx <= core.maxTx &&
+            ty >= core.minTy &&
+            ty <= core.maxTy;
+        unawaited(
+          _decodeTile(
+            level,
+            tx,
+            ty,
+            key,
+            isCore ? TilePriority.visible : TilePriority.prefetch,
+          ),
+        );
       }
     }
   }
@@ -117,10 +152,19 @@ class LodController extends ChangeNotifier {
   bool _isStillWanted(TileCacheKey key) {
     final wanted = _wanted;
     if (wanted == null || wanted.level != key.level) return false;
-    return key.tileX >= wanted.minTx && key.tileX <= wanted.maxTx && key.tileY >= wanted.minTy && key.tileY <= wanted.maxTy;
+    return key.tileX >= wanted.minTx &&
+        key.tileX <= wanted.maxTx &&
+        key.tileY >= wanted.minTy &&
+        key.tileY <= wanted.maxTy;
   }
 
-  Future<void> _decodeTile(SvsLevel level, int tx, int ty, TileCacheKey key, TilePriority priority) async {
+  Future<void> _decodeTile(
+    SvsLevel level,
+    int tx,
+    int ty,
+    TileCacheKey key,
+    TilePriority priority,
+  ) async {
     try {
       final result = await _fetchTileBytes(level, tx, ty, key, priority);
       final bytes = result.bytes;
@@ -140,7 +184,9 @@ class LodController extends ChangeNotifier {
           final codec = await ui.instantiateImageCodec(bytes);
           final frame = await codec.getNextFrame();
           if (level.needsYCbCrFix) {
-            final data = await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+            final data = await frame.image.toByteData(
+              format: ui.ImageByteFormat.rawRgba,
+            );
             // A tile at the right/bottom edge of the level can legally
             // decode smaller than the nominal tile size — use the frame's
             // *actual* dimensions here, not level.tileWidth/tileLength, or
@@ -149,7 +195,10 @@ class LodController extends ChangeNotifier {
             final actualHeight = frame.image.height;
             frame.image.dispose();
             if (data != null) {
-              final pixels = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+              final pixels = data.buffer.asUint8List(
+                data.offsetInBytes,
+                data.lengthInBytes,
+              );
               undoSpuriousYCbCr(pixels);
               image = await _decodeRgba(pixels, actualWidth, actualHeight);
             }
@@ -178,7 +227,13 @@ class LodController extends ChangeNotifier {
   /// isolate rather than leaving every tile permanently blank. Records the
   /// pool request's id into [_inFlight] as soon as it's known, so
   /// [_refreshTiles] can actively [TileWorkerPool.cancel] it later.
-  Future<TileWorkerResult> _fetchTileBytes(SvsLevel level, int tx, int ty, TileCacheKey key, TilePriority priority) async {
+  Future<TileWorkerResult> _fetchTileBytes(
+    SvsLevel level,
+    int tx,
+    int ty,
+    TileCacheKey key,
+    TilePriority priority,
+  ) async {
     TileWorkerPool? pool;
     try {
       pool = await poolFuture;
@@ -186,13 +241,21 @@ class LodController extends ChangeNotifier {
       pool = null;
     }
     if (pool != null) {
-      final handle = pool.requestTile(level: level.index, tileX: tx, tileY: ty, priority: priority);
+      final handle = pool.requestTile(
+        level: level.index,
+        tileX: tx,
+        tileY: ty,
+        priority: priority,
+      );
       _inFlight[key] = handle.requestId;
       return handle.result;
     }
     if (level.isJpeg) {
       final bytes = await svsFile.readTileJpegBytes(level.index, tx, ty);
-      return TileWorkerResult(bytes: bytes.isEmpty ? null : bytes, isRgba: false);
+      return TileWorkerResult(
+        bytes: bytes.isEmpty ? null : bytes,
+        isRgba: false,
+      );
     }
     final rgba = await svsFile.readTileRgba(level.index, tx, ty);
     return TileWorkerResult(bytes: rgba.isEmpty ? null : rgba, isRgba: true);
@@ -200,7 +263,13 @@ class LodController extends ChangeNotifier {
 
   static Future<ui.Image> _decodeRgba(Uint8List bytes, int width, int height) {
     final completer = Completer<ui.Image>();
-    ui.decodeImageFromPixels(bytes, width, height, ui.PixelFormat.rgba8888, completer.complete);
+    ui.decodeImageFromPixels(
+      bytes,
+      width,
+      height,
+      ui.PixelFormat.rgba8888,
+      completer.complete,
+    );
     return completer.future;
   }
 

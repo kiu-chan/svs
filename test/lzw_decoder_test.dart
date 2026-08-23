@@ -57,8 +57,11 @@ void main() {
     expect(() => decodeTiffLzw(data, 5), throwsA(isA<SvsFormatException>()));
   });
 
-  test('throws on a code that is neither a known entry nor a valid self-reference', () {
-    final data = _packMsb9([256, 300, 257]);
-    expect(() => decodeTiffLzw(data, 10), throwsA(isA<SvsFormatException>()));
-  });
+  test(
+    'throws on a code that is neither a known entry nor a valid self-reference',
+    () {
+      final data = _packMsb9([256, 300, 257]);
+      expect(() => decodeTiffLzw(data, 10), throwsA(isA<SvsFormatException>()));
+    },
+  );
 }

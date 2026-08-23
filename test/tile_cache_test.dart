@@ -8,7 +8,13 @@ import 'package:svs/src/cache/tile_cache.dart';
 Future<ui.Image> _makeImage(int side) {
   final pixels = Uint8List(side * side * 4);
   final completer = Completer<ui.Image>();
-  ui.decodeImageFromPixels(pixels, side, side, ui.PixelFormat.rgba8888, completer.complete);
+  ui.decodeImageFromPixels(
+    pixels,
+    side,
+    side,
+    ui.PixelFormat.rgba8888,
+    completer.complete,
+  );
   return completer.future;
 }
 
@@ -20,16 +26,19 @@ void main() {
     expect(cache.get(const TileCacheKey(level: 0, tileX: 0, tileY: 0)), isNull);
   });
 
-  test('put() then get() returns the same image and tracks byte usage', () async {
-    final cache = TileCache(maxBytes: 1000);
-    final image = await _makeImage(2);
-    const key = TileCacheKey(level: 0, tileX: 1, tileY: 2);
+  test(
+    'put() then get() returns the same image and tracks byte usage',
+    () async {
+      final cache = TileCache(maxBytes: 1000);
+      final image = await _makeImage(2);
+      const key = TileCacheKey(level: 0, tileX: 1, tileY: 2);
 
-    cache.put(key, image, 16);
+      cache.put(key, image, 16);
 
-    expect(cache.get(key), same(image));
-    expect(cache.currentBytes, 16);
-  });
+      expect(cache.get(key), same(image));
+      expect(cache.currentBytes, 16);
+    },
+  );
 
   test('evicts least-recently-used entries once over budget', () async {
     final cache = TileCache(maxBytes: 30);

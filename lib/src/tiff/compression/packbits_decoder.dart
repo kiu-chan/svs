@@ -34,7 +34,9 @@ Uint8List decodePackBits(Uint8List data, int expectedLength) {
   }
 
   if (outPos != expectedLength) {
-    throw SvsFormatException('Corrupt PackBits stream: decoded $outPos bytes, expected $expectedLength');
+    throw SvsFormatException(
+      'Corrupt PackBits stream: decoded $outPos bytes, expected $expectedLength',
+    );
   }
   return out;
 }

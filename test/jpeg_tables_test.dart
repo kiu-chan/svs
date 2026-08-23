@@ -5,7 +5,15 @@ import 'package:svs/src/jpeg/jpeg_tables.dart';
 
 void main() {
   test('splices tables (minus EOI) with tile scan data (minus SOI)', () {
-    final tables = Uint8List.fromList([0xFF, 0xD8, 0xAA, 0xBB, 0xCC, 0xFF, 0xD9]);
+    final tables = Uint8List.fromList([
+      0xFF,
+      0xD8,
+      0xAA,
+      0xBB,
+      0xCC,
+      0xFF,
+      0xD9,
+    ]);
     final tile = Uint8List.fromList([0xFF, 0xD8, 0xDD, 0xEE, 0xFF, 0xD9]);
 
     final spliced = spliceJpegTile(tables, tile);

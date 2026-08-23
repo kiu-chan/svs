@@ -13,7 +13,12 @@ class Jp2kImage {
   final int numComponents;
   final Uint8List pixels;
 
-  const Jp2kImage({required this.width, required this.height, required this.numComponents, required this.pixels});
+  const Jp2kImage({
+    required this.width,
+    required this.height,
+    required this.numComponents,
+    required this.pixels,
+  });
 }
 
 /// A JPEG2000 codestream failed to decode — malformed input, an
@@ -47,14 +52,22 @@ Jp2kImage decodeJ2k(Uint8List bytes, {int reducedResolutionFactor = 0}) {
   try {
     buffer.asTypedList(bytes.length).setAll(0, bytes);
 
-    final resultPtr = bindings.jp2k_decode(buffer, bytes.length, reducedResolutionFactor);
+    final resultPtr = bindings.jp2k_decode(
+      buffer,
+      bytes.length,
+      reducedResolutionFactor,
+    );
     if (resultPtr == ffi.nullptr) {
-      throw const Jp2kDecodeException('jp2k_decode returned null (out of memory allocating the result)');
+      throw const Jp2kDecodeException(
+        'jp2k_decode returned null (out of memory allocating the result)',
+      );
     }
     try {
       final result = resultPtr.ref;
       if (result.error != ffi.nullptr) {
-        throw Jp2kDecodeException(result.error.cast<pkg_ffi.Utf8>().toDartString());
+        throw Jp2kDecodeException(
+          result.error.cast<pkg_ffi.Utf8>().toDartString(),
+        );
       }
       final pixelCount = result.width * result.height * result.num_components;
       return Jp2kImage(

@@ -5,11 +5,18 @@ class TileCacheKey {
   final int tileX;
   final int tileY;
 
-  const TileCacheKey({required this.level, required this.tileX, required this.tileY});
+  const TileCacheKey({
+    required this.level,
+    required this.tileX,
+    required this.tileY,
+  });
 
   @override
   bool operator ==(Object other) =>
-      other is TileCacheKey && other.level == level && other.tileX == tileX && other.tileY == tileY;
+      other is TileCacheKey &&
+      other.level == level &&
+      other.tileX == tileX &&
+      other.tileY == tileY;
 
   @override
   int get hashCode => Object.hash(level, tileX, tileY);

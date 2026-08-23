@@ -18,12 +18,16 @@ Uint8List spliceJpegTile(Uint8List? jpegTables, Uint8List tileBytes) {
   }
 
   var tablesEnd = jpegTables.length;
-  if (tablesEnd >= 2 && jpegTables[tablesEnd - 2] == _eoi[0] && jpegTables[tablesEnd - 1] == _eoi[1]) {
+  if (tablesEnd >= 2 &&
+      jpegTables[tablesEnd - 2] == _eoi[0] &&
+      jpegTables[tablesEnd - 1] == _eoi[1]) {
     tablesEnd -= 2;
   }
 
   var tileStart = 0;
-  if (tileBytes.length >= 2 && tileBytes[0] == _soi[0] && tileBytes[1] == _soi[1]) {
+  if (tileBytes.length >= 2 &&
+      tileBytes[0] == _soi[0] &&
+      tileBytes[1] == _soi[1]) {
     tileStart = 2;
   }
 

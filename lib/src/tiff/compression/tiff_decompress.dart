@@ -11,7 +11,11 @@ import 'packbits_decoder.dart';
 /// [ApCompression] value that yields raw samples directly (not a JPEG
 /// bitstream, which callers handle separately via the `jpeg/` splicing
 /// path).
-Uint8List decompressTiffStrip(int compression, Uint8List data, {required int expectedLength}) {
+Uint8List decompressTiffStrip(
+  int compression,
+  Uint8List data, {
+  required int expectedLength,
+}) {
   switch (compression) {
     case ApCompression.none:
       if (data.length != expectedLength) {
@@ -28,9 +32,13 @@ Uint8List decompressTiffStrip(int compression, Uint8List data, {required int exp
     case ApCompression.deflateAdobe:
       final result = decodeTiffDeflate(data);
       if (result.length < expectedLength) {
-        throw SvsFormatException('Deflate stream decoded to ${result.length} bytes, expected $expectedLength');
+        throw SvsFormatException(
+          'Deflate stream decoded to ${result.length} bytes, expected $expectedLength',
+        );
       }
-      return result.length == expectedLength ? result : result.sublist(0, expectedLength);
+      return result.length == expectedLength
+          ? result
+          : result.sublist(0, expectedLength);
     default:
       throw SvsUnsupportedCompressionError(
         compression,

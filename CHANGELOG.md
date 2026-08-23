@@ -1,3 +1,14 @@
-## 0.0.1
+## 0.1.0
 
-* Initial project scaffold.
+* Initial release.
+* `SvsFile`: opens Aperio SVS (and generic tiled TIFF) files — resolution
+  pyramid levels, associated images (thumbnail/label/macro), and parsed
+  Aperio metadata (magnification, microns-per-pixel).
+* `SvsImageView`: a pan/zoom widget streaming only the tiles the current
+  viewport needs, at the resolution level matching the current zoom.
+  Includes a minimap, zoom percentage, and a physical (µm/mm) scale bar.
+* JPEG (`Compression=7`) and JPEG2000 (`Compression=33005`) tile decoding —
+  JPEG2000 via the `openjpeg_ffi` package.
+* Tile fetch and JPEG2000 decode run on background isolates; a
+  memory-budgeted LRU tile cache responds to OS memory-pressure signals and
+  actively cancels in-flight requests for tiles scrolled out of view.

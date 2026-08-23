@@ -29,7 +29,8 @@ class _MyAppState extends State<MyApp> {
       final image = decodeJ2k(Uint8List(0));
       resultText = 'decoded ${image.width}x${image.height}';
     } on Jp2kDecodeException catch (e) {
-      resultText = 'native call reached OpenJPEG, got the expected decode error:\n${e.message}';
+      resultText =
+          'native call reached OpenJPEG, got the expected decode error:\n${e.message}';
     }
   }
 
@@ -41,7 +42,11 @@ class _MyAppState extends State<MyApp> {
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
-            child: Text(resultText, style: const TextStyle(fontSize: 18), textAlign: TextAlign.center),
+            child: Text(
+              resultText,
+              style: const TextStyle(fontSize: 18),
+              textAlign: TextAlign.center,
+            ),
           ),
         ),
       ),

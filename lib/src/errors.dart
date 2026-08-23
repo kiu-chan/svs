@@ -22,7 +22,8 @@ class SvsFormatException extends SvsException {
 class SvsUnsupportedCompressionError extends SvsException {
   final int compressionTag;
 
-  const SvsUnsupportedCompressionError(this.compressionTag, String message) : super(message);
+  const SvsUnsupportedCompressionError(this.compressionTag, String message)
+    : super(message);
 }
 
 /// Reading a specific tile failed at the I/O level (short read, file
@@ -33,5 +34,6 @@ class TileIoException extends SvsException {
   final int tileX;
   final int tileY;
 
-  const TileIoException(this.level, this.tileX, this.tileY, String message) : super(message);
+  const TileIoException(this.level, this.tileX, this.tileY, String message)
+    : super(message);
 }

@@ -1,15 +1,15 @@
 name: svs
-description: "A Flutter library for displaying Aperio SVS (whole-slide image) files."
-version: 0.0.1
-publish_to: none
-homepage: https://github.com/your-username/svs
-repository: https://github.com/your-username/svs
-issue_tracker: https://github.com/your-username/svs/issues
+description: "Streams and renders Aperio SVS whole-slide pathology images: pan/zoom, LOD tile streaming, JPEG & JPEG2000, no full-image load."
+version: 0.1.0
+homepage: https://github.com/kiu-chan/svs
+repository: https://github.com/kiu-chan/svs
+issue_tracker: https://github.com/kiu-chan/svs/issues
+funding:
+  - https://ko-fi.com/monlycute
 topics:
   - image
-  - image-viewer
-  - pathology
-  - whole-slide-imaging
+  - medical
+  - widget
 
 environment:
   sdk: ^3.12.2
@@ -18,6 +18,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  # TODO: switch to `openjpeg_ffi: ^0.1.0` (hosted) once that package is
+  # published to pub.dev — pub.dev refuses to publish a package with a path
+  # dependency.
   openjpeg_ffi:
     path: packages/openjpeg_ffi
 

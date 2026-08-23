@@ -59,7 +59,10 @@ class TileWorkerPool {
     }
   }
 
-  static Future<TileWorkerPool> spawn(String path, {int workerCount = 2}) async {
+  static Future<TileWorkerPool> spawn(
+    String path, {
+    int workerCount = 2,
+  }) async {
     final workers = <_Worker>[];
     try {
       for (var i = 0; i < workerCount; i++) {
@@ -83,8 +86,17 @@ class TileWorkerPool {
     final requestId = _nextRequestId++;
     final completer = Completer<TileWorkerResult>();
     _pending[requestId] = completer;
-    final workerIndex = priority == TilePriority.visible ? 0 : _workers.length - 1;
-    _workers[workerIndex].send(TileRequestMessage(requestId: requestId, level: level, tileX: tileX, tileY: tileY));
+    final workerIndex = priority == TilePriority.visible
+        ? 0
+        : _workers.length - 1;
+    _workers[workerIndex].send(
+      TileRequestMessage(
+        requestId: requestId,
+        level: level,
+        tileX: tileX,
+        tileY: tileY,
+      ),
+    );
     return TileRequestHandle(requestId: requestId, result: completer.future);
   }
 
@@ -109,7 +121,9 @@ class TileWorkerPool {
     if (message.error != null) {
       completer.completeError(TileIoException(-1, -1, -1, message.error!));
     } else {
-      completer.complete(TileWorkerResult(bytes: message.bytes, isRgba: message.isRgba));
+      completer.complete(
+        TileWorkerResult(bytes: message.bytes, isRgba: message.isRgba),
+      );
     }
   }
 
@@ -142,14 +156,20 @@ class _Worker {
         if (message.ok) {
           openCompleter.complete();
         } else {
-          openCompleter.completeError(SvsFormatException(message.error ?? 'worker failed to open file'));
+          openCompleter.completeError(
+            SvsFormatException(message.error ?? 'worker failed to open file'),
+          );
         }
       } else if (message is TileResponseMessage) {
         worker._responseController.add(message);
       }
     });
 
-    await Isolate.spawn(_workerMain, mainReceivePort.sendPort, debugName: 'svs-tile-worker');
+    await Isolate.spawn(
+      _workerMain,
+      mainReceivePort.sendPort,
+      debugName: 'svs-tile-worker',
+    );
     final workerSendPort = await readyCompleter.future;
     worker = _Worker._(workerSendPort, mainReceivePort);
     workerSendPort.send(OpenFileMessage(path));
@@ -188,18 +208,36 @@ void _workerMain(SendPort mainSendPort) async {
       try {
         final level = file.levels[message.level];
         if (level.isJpeg) {
-          final bytes = await level.readTileJpegBytes(message.tileX, message.tileY);
+          final bytes = await level.readTileJpegBytes(
+            message.tileX,
+            message.tileY,
+          );
           mainSendPort.send(
-            TileResponseMessage(requestId: message.requestId, bytes: bytes.isEmpty ? null : bytes, isRgba: false),
+            TileResponseMessage(
+              requestId: message.requestId,
+              bytes: bytes.isEmpty ? null : bytes,
+              isRgba: false,
+            ),
           );
         } else {
           final rgba = await level.readTileRgba(message.tileX, message.tileY);
           mainSendPort.send(
-            TileResponseMessage(requestId: message.requestId, bytes: rgba.isEmpty ? null : rgba, isRgba: true),
+            TileResponseMessage(
+              requestId: message.requestId,
+              bytes: rgba.isEmpty ? null : rgba,
+              isRgba: true,
+            ),
           );
         }
       } catch (e) {
-        mainSendPort.send(TileResponseMessage(requestId: message.requestId, bytes: null, isRgba: false, error: e.toString()));
+        mainSendPort.send(
+          TileResponseMessage(
+            requestId: message.requestId,
+            bytes: null,
+            isRgba: false,
+            error: e.toString(),
+          ),
+        );
       }
     } else if (message is CancelTileMessage) {
       cancelled.add(message.requestId);

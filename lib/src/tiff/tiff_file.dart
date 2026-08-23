@@ -14,7 +14,11 @@ class TiffHeader {
   final TiffKind kind;
   final int firstIfdOffset;
 
-  const TiffHeader({required this.byteOrder, required this.kind, required this.firstIfdOffset});
+  const TiffHeader({
+    required this.byteOrder,
+    required this.kind,
+    required this.firstIfdOffset,
+  });
 
   /// Size in bytes of any offset/value field for this file: the per-entry
   /// "value or offset" sub-field, and the next-IFD pointer.
@@ -32,7 +36,12 @@ class TiffTag {
   final int count;
   final Uint8List valueField;
 
-  const TiffTag({required this.id, required this.type, required this.count, required this.valueField});
+  const TiffTag({
+    required this.id,
+    required this.type,
+    required this.count,
+    required this.valueField,
+  });
 
   int get totalBytes => count * tiffTypeSize(type);
 }
@@ -43,8 +52,12 @@ class TiffIfd {
   final int? nextIfdOffset;
   final TiffFile _file;
 
-  const TiffIfd._({required this.offset, required this.tags, required this.nextIfdOffset, required TiffFile file})
-    : _file = file;
+  const TiffIfd._({
+    required this.offset,
+    required this.tags,
+    required this.nextIfdOffset,
+    required this._file,
+  });
 
   bool hasTag(int id) => tags.containsKey(id);
 
@@ -87,7 +100,9 @@ class TiffIfd {
     }
     final values = await readInts(id);
     if (values.isEmpty) {
-      throw SvsFormatException('Tag $id in IFD at offset $offset has no values');
+      throw SvsFormatException(
+        'Tag $id in IFD at offset $offset has no values',
+      );
     }
     return values.first;
   }
@@ -97,7 +112,9 @@ class TiffIfd {
     final t = tags[id];
     if (t == null) return null;
     if (t.type != TiffType.ascii) {
-      throw SvsFormatException('Tag $id in IFD at offset $offset is not ASCII (type=${t.type})');
+      throw SvsFormatException(
+        'Tag $id in IFD at offset $offset is not ASCII (type=${t.type})',
+      );
     }
     final bytes = await _resolveValueBytes(t);
     return decodeTiffAscii(bytes);
@@ -141,10 +158,14 @@ class TiffFile {
     var offset = header.firstIfdOffset;
     while (offset != 0) {
       if (!visited.add(offset)) {
-        throw SvsFormatException('IFD chain contains a cycle back to offset $offset');
+        throw SvsFormatException(
+          'IFD chain contains a cycle back to offset $offset',
+        );
       }
       if (visited.length > _maxIfdChainLength) {
-        throw SvsFormatException('IFD chain exceeds $_maxIfdChainLength entries — likely corrupt');
+        throw SvsFormatException(
+          'IFD chain exceeds $_maxIfdChainLength entries — likely corrupt',
+        );
       }
       final ifd = await _readIfd(file, offset);
       ifds.add(ifd);
@@ -196,18 +217,30 @@ class TiffFile {
     final magic = data.getUint16(2, order);
     if (magic == 42) {
       final firstIfd = data.getUint32(4, order);
-      return TiffHeader(byteOrder: order, kind: TiffKind.classic, firstIfdOffset: firstIfd);
+      return TiffHeader(
+        byteOrder: order,
+        kind: TiffKind.classic,
+        firstIfdOffset: firstIfd,
+      );
     }
     if (magic == 43) {
       if (bytes.length < 16) {
-        throw const SvsFormatException('File too short to contain a BigTIFF header');
+        throw const SvsFormatException(
+          'File too short to contain a BigTIFF header',
+        );
       }
       final offsetByteSize = data.getUint16(4, order);
       if (offsetByteSize != 8) {
-        throw SvsFormatException('Unsupported BigTIFF offset size: $offsetByteSize');
+        throw SvsFormatException(
+          'Unsupported BigTIFF offset size: $offsetByteSize',
+        );
       }
       final firstIfd = data.getUint64(8, order);
-      return TiffHeader(byteOrder: order, kind: TiffKind.bigTiff, firstIfdOffset: firstIfd);
+      return TiffHeader(
+        byteOrder: order,
+        kind: TiffKind.bigTiff,
+        firstIfdOffset: firstIfd,
+      );
     }
     throw SvsFormatException('Unrecognized TIFF magic number: $magic');
   }
@@ -219,13 +252,17 @@ class TiffFile {
     final dirCountFieldSize = isBig ? 8 : 2; // "number of directory entries"
     final entrySize = isBig ? 20 : 12; // one directory entry
     final entryCountFieldSize = isBig ? 8 : 4; // per-entry "count" sub-field
-    final valueFieldSize = file.header.valueFieldSize; // per-entry "value or offset" sub-field
-    const entryCountFieldOffset = 4; // id(2) + type(2) precede it, in both kinds
+    final valueFieldSize =
+        file.header.valueFieldSize; // per-entry "value or offset" sub-field
+    const entryCountFieldOffset =
+        4; // id(2) + type(2) precede it, in both kinds
     final valueFieldOffset = entryCountFieldOffset + entryCountFieldSize;
 
     final dirCountBytes = await file.readBytes(offset, dirCountFieldSize);
     final dirCountData = ByteData.sublistView(dirCountBytes);
-    final entryCount = isBig ? dirCountData.getUint64(0, order) : dirCountData.getUint16(0, order);
+    final entryCount = isBig
+        ? dirCountData.getUint64(0, order)
+        : dirCountData.getUint16(0, order);
 
     final tableStart = offset + dirCountFieldSize;
     final tableBytes = await file.readBytes(tableStart, entryCount * entrySize);
@@ -240,15 +277,31 @@ class TiffFile {
           ? tableData.getUint64(base + entryCountFieldOffset, order)
           : tableData.getUint32(base + entryCountFieldOffset, order);
       final vOff = base + valueFieldOffset;
-      final valueField = Uint8List.sublistView(tableBytes, vOff, vOff + valueFieldSize);
-      tags[id] = TiffTag(id: id, type: type, count: count, valueField: valueField);
+      final valueField = Uint8List.sublistView(
+        tableBytes,
+        vOff,
+        vOff + valueFieldSize,
+      );
+      tags[id] = TiffTag(
+        id: id,
+        type: type,
+        count: count,
+        valueField: valueField,
+      );
     }
 
     final nextOffsetPos = tableStart + entryCount * entrySize;
     final nextBytes = await file.readBytes(nextOffsetPos, valueFieldSize);
     final nextData = ByteData.sublistView(nextBytes);
-    final next = isBig ? nextData.getUint64(0, order) : nextData.getUint32(0, order);
+    final next = isBig
+        ? nextData.getUint64(0, order)
+        : nextData.getUint32(0, order);
 
-    return TiffIfd._(offset: offset, tags: tags, nextIfdOffset: next == 0 ? null : next, file: file);
+    return TiffIfd._(
+      offset: offset,
+      tags: tags,
+      nextIfdOffset: next == 0 ? null : next,
+      file: file,
+    );
   }
 }

@@ -31,7 +31,11 @@ class VisibleTiles {
 /// this returns the last (coarsest) one that still qualifies, minimizing
 /// decoded/streamed data, and falls back to level 0 if even that doesn't
 /// qualify (deep zoom-in, where some upsampling is unavoidable).
-int selectLevel(List<SvsLevelGeometry> levels, double scale, {double maxUpsample = 1.3}) {
+int selectLevel(
+  List<SvsLevelGeometry> levels,
+  double scale, {
+  double maxUpsample = 1.3,
+}) {
   var chosen = 0;
   for (var i = 0; i < levels.length; i++) {
     if (levels[i].downsample * scale <= maxUpsample) {
@@ -47,9 +51,16 @@ int selectLevel(List<SvsLevelGeometry> levels, double scale, {double maxUpsample
 /// coordinate shown at the viewport's top-left corner. [margin] tiles are
 /// added on every side (for prefetching) before clamping to the level's
 /// actual tile grid.
-VisibleTiles computeVisibleTiles(SvsLevelGeometry level, Size viewportSize, double scale, Offset origin, {int margin = 0}) {
+VisibleTiles computeVisibleTiles(
+  SvsLevelGeometry level,
+  Size viewportSize,
+  double scale,
+  Offset origin, {
+  int margin = 0,
+}) {
   final level0TopLeft = origin;
-  final level0BottomRight = origin + Offset(viewportSize.width / scale, viewportSize.height / scale);
+  final level0BottomRight =
+      origin + Offset(viewportSize.width / scale, viewportSize.height / scale);
 
   final levelTopLeft = level0TopLeft / level.downsample;
   final levelBottomRight = level0BottomRight / level.downsample;

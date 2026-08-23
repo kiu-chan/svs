@@ -34,6 +34,11 @@ class SvsMetadata {
       if (key.isNotEmpty) raw[key] = value;
     }
     final mpp = double.tryParse(raw['MPP'] ?? '');
-    return SvsMetadata(mppX: mpp, mppY: mpp, appMag: int.tryParse(raw['AppMag'] ?? ''), raw: raw);
+    return SvsMetadata(
+      mppX: mpp,
+      mppY: mpp,
+      appMag: int.tryParse(raw['AppMag'] ?? ''),
+      raw: raw,
+    );
   }
 }

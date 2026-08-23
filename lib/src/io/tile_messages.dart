@@ -20,7 +20,12 @@ class TileRequestMessage {
   final int level;
   final int tileX;
   final int tileY;
-  const TileRequestMessage({required this.requestId, required this.level, required this.tileX, required this.tileY});
+  const TileRequestMessage({
+    required this.requestId,
+    required this.level,
+    required this.tileX,
+    required this.tileY,
+  });
 }
 
 /// Sent from main to a worker: if [requestId] hasn't been started yet,
@@ -44,7 +49,12 @@ class TileResponseMessage {
   final Uint8List? bytes;
   final bool isRgba;
   final String? error;
-  const TileResponseMessage({required this.requestId, required this.bytes, required this.isRgba, this.error});
+  const TileResponseMessage({
+    required this.requestId,
+    required this.bytes,
+    required this.isRgba,
+    this.error,
+  });
 }
 
 /// Sent from main to a worker: finish up and let the isolate terminate.
