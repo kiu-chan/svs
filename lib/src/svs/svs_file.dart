@@ -3,9 +3,20 @@ import 'dart:typed_data';
 
 import '../errors.dart';
 import '../jpeg/jpeg_tables.dart';
+import '../tiff/compression/tiff_decompress.dart';
+import '../tiff/predictor.dart';
+import '../tiff/raster.dart';
 import '../tiff/tiff_file.dart';
 import 'aperio_tags.dart';
 import 'svs_metadata.dart';
+
+const _rawRasterCompressions = {
+  ApCompression.none,
+  ApCompression.lzw,
+  ApCompression.deflate,
+  ApCompression.packBits,
+  ApCompression.deflateAdobe,
+};
 
 enum AssociatedImageKind { label, macro, thumbnail }
 
@@ -17,10 +28,30 @@ class SvsAssociatedImage {
   final int width;
   final int height;
   final int compression;
+  final int photometricInterpretation;
+  final int samplesPerPixel;
+  final List<int> bitsPerSample;
+  final int predictor;
 
-  /// False when this image isn't JPEG-compressed. Still listed rather than
-  /// dropped — v1 just can't decode its pixels.
-  bool get isDecodable => compression == ApCompression.newJpeg;
+  /// Whether this image uses new-style JPEG — decoded via [readStripJpegBytes]
+  /// plus `dart:ui`'s own JPEG codec.
+  bool get isJpeg => compression == ApCompression.newJpeg;
+
+  /// False when this package can't decode this image's pixels. True for
+  /// [isJpeg], and for the handled raw-raster compressions (LZW/PackBits/
+  /// Deflate/none) *if* their sample layout is one this package understands
+  /// (8-bit RGB or RGBA, horizontal-differencing predictor or none) — still
+  /// listed rather than dropped when false, since the image's existence and
+  /// dimensions are useful even when its pixels aren't decodable.
+  bool get isDecodable {
+    if (isJpeg) return true;
+    if (!_rawRasterCompressions.contains(compression)) return false;
+    if (photometricInterpretation != ApPhotometric.rgb) return false;
+    if (samplesPerPixel != 3 && samplesPerPixel != 4) return false;
+    if (bitsPerSample.any((b) => b != 8)) return false;
+    if (predictor != 1 && predictor != 2) return false;
+    return true;
+  }
 
   final TiffFile _file;
   final TiffIfd _ifd;
@@ -37,6 +68,10 @@ class SvsAssociatedImage {
     required this.width,
     required this.height,
     required this.compression,
+    required this.photometricInterpretation,
+    required this.samplesPerPixel,
+    required this.bitsPerSample,
+    required this.predictor,
     required TiffFile file,
     required TiffIfd ifd,
   }) : _file = file,
@@ -88,14 +123,15 @@ class SvsAssociatedImage {
   /// covering rows `[i * rowsPerStrip, min((i + 1) * rowsPerStrip, height))`
   /// of the image. Empty for a sparse strip (byte count 0 in the file).
   ///
-  /// Throws [SvsUnsupportedCompressionError] if [isDecodable] is false —
-  /// check that first to avoid the exception.
+  /// Throws [SvsUnsupportedCompressionError] if [isJpeg] is false — check
+  /// that first (a non-JPEG image may still be decodable via
+  /// [readStripRgba]).
   Future<Uint8List> readStripJpegBytes(int i) async {
-    if (!isDecodable) {
+    if (!isJpeg) {
       throw SvsUnsupportedCompressionError(
         compression,
-        'Associated image (IFD $ifdIndex, $kind) uses TIFF Compression=$compression, which this '
-        'package cannot decode — only new-style JPEG (Compression=7) is supported',
+        'Associated image (IFD $ifdIndex, $kind) uses TIFF Compression=$compression, not new-style '
+        'JPEG (Compression=7) — use readStripRgba instead if isDecodable is true',
       );
     }
 
@@ -106,6 +142,41 @@ class SvsAssociatedImage {
     final raw = await _file.readBytes(_stripOffsets![i], byteCount);
     final tables = await _loadJpegTables();
     return spliceJpegTile(tables, raw);
+  }
+
+  /// The decoded RGBA8888 bytes for strip [i] alone, tightly packed — same
+  /// row coverage as [readStripJpegBytes]. Empty for a sparse strip. Only
+  /// for the raw-raster compressions (LZW/PackBits/Deflate/none); JPEG
+  /// strips go through [readStripJpegBytes] instead.
+  ///
+  /// Throws [SvsUnsupportedCompressionError] if [isDecodable] is false —
+  /// check that first to avoid the exception.
+  Future<Uint8List> readStripRgba(int i) async {
+    if (!isDecodable) {
+      throw SvsUnsupportedCompressionError(
+        compression,
+        'Associated image (IFD $ifdIndex, $kind) uses TIFF Compression=$compression, '
+        'PhotometricInterpretation=$photometricInterpretation, SamplesPerPixel=$samplesPerPixel, '
+        'BitsPerSample=$bitsPerSample, Predictor=$predictor, which this package cannot decode',
+      );
+    }
+
+    await _ensureStripTablesLoaded();
+    final byteCount = _stripByteCounts![i];
+    if (byteCount == 0) return Uint8List(0);
+
+    final rows = _rowsInStrip(i);
+    final raw = await _file.readBytes(_stripOffsets![i], byteCount);
+    final samples = decompressTiffStrip(compression, raw, expectedLength: width * rows * samplesPerPixel);
+    if (predictor == 2) {
+      undoHorizontalPredictor(samples, width: width, height: rows, samplesPerPixel: samplesPerPixel);
+    }
+    return expandRgbToRgba(samples, width: width, height: rows, samplesPerPixel: samplesPerPixel);
+  }
+
+  int _rowsInStrip(int i) {
+    final remaining = height - i * _rowsPerStrip!;
+    return remaining < _rowsPerStrip! ? remaining : _rowsPerStrip!;
   }
 }
 
@@ -298,6 +369,16 @@ class SvsFile {
             width: width,
             height: height,
             compression: compression,
+            // TIFF defaults when these tags are absent: 1 sample/pixel, 1
+            // bit/sample, Predictor=1 (none). PhotometricInterpretation has
+            // no real default; -1 stands for "absent", which isDecodable
+            // correctly treats as not-RGB.
+            photometricInterpretation: ifd.hasTag(ApTag.photometricInterpretation)
+                ? await ifd.readInt(ApTag.photometricInterpretation)
+                : -1,
+            samplesPerPixel: ifd.hasTag(ApTag.samplesPerPixel) ? await ifd.readInt(ApTag.samplesPerPixel) : 1,
+            bitsPerSample: ifd.hasTag(ApTag.bitsPerSample) ? await ifd.readInts(ApTag.bitsPerSample) : const [1],
+            predictor: ifd.hasTag(ApTag.predictor) ? await ifd.readInt(ApTag.predictor) : 1,
             file: tiff,
             ifd: ifd,
           ),
