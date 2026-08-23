@@ -103,6 +103,71 @@ void main() {
           'exportAssociatedImage(thumbnail, png): ${thumbBytes.length} bytes',
         );
       }
+
+      // Crop a real region and re-export it as a brand new pyramidal .svs,
+      // then reopen *that* file and confirm it decodes back to (about) the
+      // same pixels — the strongest end-to-end proof the writer's output is
+      // a genuinely valid, self-consistent .svs, not just well-formed TIFF.
+      final pyramidBytes = await exportSvsRegionAsSvs(
+        svs,
+        level: 0,
+        x: 5000,
+        y: 5000,
+        width: 600,
+        height: 400,
+        tileSize: 256,
+      );
+      expect(pyramidBytes, isNotEmpty);
+      // ignore: avoid_print
+      print('exportSvsRegionAsSvs: ${pyramidBytes.length} bytes');
+
+      final pyramidPath =
+          '${Directory.systemTemp.path}/svs_manual_test_cropped_pyramid.svs';
+      await File(pyramidPath).writeAsBytes(pyramidBytes);
+      addTearDown(() => File(pyramidPath).delete());
+
+      final reopened = await SvsFile.open(pyramidPath);
+      addTearDown(reopened.close);
+      expect(reopened.levels.first.width, 600);
+      expect(reopened.levels.first.height, 400);
+      // ignore: avoid_print
+      print(
+        'exportSvsRegionAsSvs reopened: '
+        '${reopened.levels.map((l) => '${l.width}x${l.height}').toList()}',
+      );
+
+      final originalRegion = await readSvsRegion(
+        svs,
+        level: 0,
+        x: 5000,
+        y: 5000,
+        width: 600,
+        height: 400,
+      );
+      final reopenedRegion = await readSvsRegion(
+        reopened,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 600,
+        height: 400,
+      );
+      final originalData = await originalRegion.toByteData();
+      final reopenedData = await reopenedRegion.toByteData();
+      originalRegion.dispose();
+      reopenedRegion.dispose();
+      final originalPixels = originalData!.buffer.asUint8List();
+      final reopenedPixels = reopenedData!.buffer.asUint8List();
+      // Center pixel only — JPEG re-compression means this isn't an exact
+      // match, but it should be close.
+      final centerIndex =
+          ((200 * 600 + 300) * 4); // row 200, col 300, of 600x400
+      for (var c = 0; c < 3; c++) {
+        expect(
+          reopenedPixels[centerIndex + c],
+          closeTo(originalPixels[centerIndex + c], 20),
+        );
+      }
     },
     skip: hasFixture ? false : 'sample file not present on this machine',
   );

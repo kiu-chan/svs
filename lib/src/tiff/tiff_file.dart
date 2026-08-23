@@ -126,6 +126,39 @@ class TiffIfd {
     final t = _require(id);
     return _resolveValueBytes(t);
   }
+
+  /// Decodes tag [id]'s value generically, according to its own TIFF type —
+  /// a `String` for ASCII, `List<int>` for integer types, `List<(int, int)>`
+  /// (numerator, denominator) for RATIONAL/SRATIONAL, `List<double>` for
+  /// FLOAT/DOUBLE, or the raw `Uint8List` for UNDEFINED. Used for dumping a
+  /// tag this package doesn't otherwise have a specific accessor for.
+  Future<Object> readValue(int id) async {
+    final t = _require(id);
+    if (t.type == TiffType.ascii) return (await readAscii(id))!;
+    if (t.type == TiffType.undefined) return readRawBytes(id);
+    final bytes = await _resolveValueBytes(t);
+    final order = _file.header.byteOrder;
+    return switch (t.type) {
+      TiffType.rational ||
+      TiffType.srational => decodeTiffRationals(bytes, t.type, t.count, order),
+      TiffType.float ||
+      TiffType.double_ => decodeTiffFloats(bytes, t.type, t.count, order),
+      _ => decodeTiffInts(bytes, t.type, t.count, order),
+    };
+  }
+
+  /// [readValue] for every tag present in this IFD — the "full info" dump.
+  Future<Map<int, Object>> readAllValues() => readValues(tags.keys);
+
+  /// [readValue] for just [ids] — silently skips any not present in this
+  /// IFD. The "partial info" counterpart to [readAllValues].
+  Future<Map<int, Object>> readValues(Iterable<int> ids) async {
+    final result = <int, Object>{};
+    for (final id in ids) {
+      if (hasTag(id)) result[id] = await readValue(id);
+    }
+    return result;
+  }
 }
 
 /// A random-access reader for one TIFF/BigTIFF file: parses the header and

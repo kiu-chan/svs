@@ -1,3 +1,26 @@
+## 1.0.0
+
+* `SvsFile.readInfo`, `SvsLevel.readAllTags`/`readTags`,
+  `SvsAssociatedImage.readAllTags`/`readTags`: read every TIFF tag on any
+  level/associated-image IFD (or just a chosen subset), decoded regardless of
+  type (ints, ASCII, RATIONAL/SRATIONAL, FLOAT/DOUBLE, raw bytes) — a full
+  structured dump of the file's own metadata, alongside the existing
+  narrower accessors (`metadata.raw`, level/associated-image geometry) for
+  callers that only need specific fields. `SvsFileInfo`/`SvsIfdInfo` carry
+  the result, with a `namedTags` getter (via the new `tiffTagName`) for
+  presenting tag IDs as human-readable names.
+* `SvsImageAdjustments`: brightness/contrast/shadow/highlight adjustment,
+  applied identically live (`SvsImageView.adjustments`, GPU-accelerated —
+  cheap to change every frame) and on export (every `exportSvs*`/
+  `encodeSvsImage` function's new `adjustments` parameter) — both derive
+  from the same affine transform, so the two are always in sync.
+* `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsToFile`: crop a region and
+  re-encode it as a brand new, valid multi-level pyramidal `.svs` file (a
+  tiled BigTIFF with JPEG-compressed tiles and an Aperio-style
+  `ImageDescription`) instead of a single flat raster image — the result can
+  be reopened with `SvsFile.open`, by this package or any other tiled-TIFF/
+  OpenSlide-aware tool, and panned/zoomed like any other slide.
+
 ## 0.3.0
 
 * `SvsAnnotationController`, `SvsAnnotation`: draw and manage point,

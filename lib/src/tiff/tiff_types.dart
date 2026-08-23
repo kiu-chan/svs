@@ -85,3 +85,48 @@ String decodeTiffAscii(Uint8List bytes) {
   }
   return utf8.decode(bytes.sublist(0, end), allowMalformed: true);
 }
+
+/// Decodes [count] RATIONAL/SRATIONAL values of [type] from [bytes] as
+/// (numerator, denominator) pairs — each is two 4-byte ints, unsigned for
+/// RATIONAL, signed for SRATIONAL.
+List<(int, int)> decodeTiffRationals(
+  Uint8List bytes,
+  int type,
+  int count,
+  Endian order,
+) {
+  if (type != TiffType.rational && type != TiffType.srational) {
+    throw SvsFormatException('TIFF type $type is not a rational type');
+  }
+  final data = ByteData.sublistView(bytes);
+  final signed = type == TiffType.srational;
+  return List.generate(count, (i) {
+    final o = i * 8;
+    final num = signed ? data.getInt32(o, order) : data.getUint32(o, order);
+    final den = signed
+        ? data.getInt32(o + 4, order)
+        : data.getUint32(o + 4, order);
+    return (num, den);
+  });
+}
+
+/// Decodes [count] FLOAT/DOUBLE values of [type] from [bytes].
+List<double> decodeTiffFloats(
+  Uint8List bytes,
+  int type,
+  int count,
+  Endian order,
+) {
+  final data = ByteData.sublistView(bytes);
+  return switch (type) {
+    TiffType.float => List.generate(
+      count,
+      (i) => data.getFloat32(i * 4, order),
+    ),
+    TiffType.double_ => List.generate(
+      count,
+      (i) => data.getFloat64(i * 8, order),
+    ),
+    _ => throw SvsFormatException('TIFF type $type is not a float type'),
+  };
+}

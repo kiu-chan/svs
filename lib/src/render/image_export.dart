@@ -8,6 +8,7 @@ import 'package:image/image.dart' as img;
 import '../errors.dart';
 import '../svs/svs_file.dart';
 import 'associated_image_decoder.dart';
+import 'image_adjustments.dart';
 import 'region_decoder.dart';
 
 /// Raster formats [encodeSvsImage] (and the `exportSvs*` convenience
@@ -45,11 +46,16 @@ enum SvsImageFormat {
 /// edge) is flattened to opaque black — use [SvsImageFormat.png] or
 /// [SvsImageFormat.tiff] instead if that transparency needs to survive.
 ///
+/// [adjustments] (default [SvsImageAdjustments.none]) is applied to the
+/// decoded pixels before encoding — the same brightness/contrast/shadow/
+/// highlight adjustment [SvsImageView.adjustments] applies live.
+///
 /// Does not dispose [image] — the caller still owns it.
 Future<Uint8List> encodeSvsImage(
   ui.Image image, {
   required SvsImageFormat format,
   int quality = 92,
+  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
 }) async {
   final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
   if (data == null) {
@@ -61,6 +67,7 @@ Future<Uint8List> encodeSvsImage(
     data.offsetInBytes,
     data.lengthInBytes,
   );
+  adjustments.applyToRgba(pixels);
   final decoded = img.Image.fromBytes(
     width: image.width,
     height: image.height,
@@ -106,6 +113,7 @@ Future<Uint8List> exportSvsRegion(
   required int height,
   required SvsImageFormat format,
   int quality = 92,
+  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
 }) async {
   final image = await readSvsRegion(
     svsFile,
@@ -116,7 +124,12 @@ Future<Uint8List> exportSvsRegion(
     height: height,
   );
   try {
-    return await encodeSvsImage(image, format: format, quality: quality);
+    return await encodeSvsImage(
+      image,
+      format: format,
+      quality: quality,
+      adjustments: adjustments,
+    );
   } finally {
     image.dispose();
   }
@@ -134,6 +147,7 @@ Future<File> exportSvsRegionToFile(
   required int height,
   required SvsImageFormat format,
   int quality = 92,
+  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
 }) async {
   final bytes = await exportSvsRegion(
     svsFile,
@@ -144,6 +158,7 @@ Future<File> exportSvsRegionToFile(
     height: height,
     format: format,
     quality: quality,
+    adjustments: adjustments,
   );
   return File(path).writeAsBytes(bytes);
 }
@@ -157,10 +172,16 @@ Future<Uint8List> exportAssociatedImage(
   SvsAssociatedImage image, {
   required SvsImageFormat format,
   int quality = 92,
+  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
 }) async {
   final decoded = await decodeAssociatedImage(image);
   try {
-    return await encodeSvsImage(decoded, format: format, quality: quality);
+    return await encodeSvsImage(
+      decoded,
+      format: format,
+      quality: quality,
+      adjustments: adjustments,
+    );
   } finally {
     decoded.dispose();
   }
@@ -173,11 +194,13 @@ Future<File> exportAssociatedImageToFile(
   required String path,
   required SvsImageFormat format,
   int quality = 92,
+  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
 }) async {
   final bytes = await exportAssociatedImage(
     image,
     format: format,
     quality: quality,
+    adjustments: adjustments,
   );
   return File(path).writeAsBytes(bytes);
 }
@@ -206,6 +229,7 @@ Future<Uint8List> exportSvsLevel(
   required SvsImageFormat format,
   int quality = 92,
   int maxPixels = defaultExportMaxPixels,
+  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
 }) async {
   if (level < 0 || level >= svsFile.levels.length) {
     throw SvsFormatException(
@@ -233,6 +257,7 @@ Future<Uint8List> exportSvsLevel(
     height: lvl.height,
     format: format,
     quality: quality,
+    adjustments: adjustments,
   );
 }
 
@@ -245,6 +270,7 @@ Future<File> exportSvsLevelToFile(
   required SvsImageFormat format,
   int quality = 92,
   int maxPixels = defaultExportMaxPixels,
+  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
 }) async {
   final bytes = await exportSvsLevel(
     svsFile,
@@ -252,6 +278,7 @@ Future<File> exportSvsLevelToFile(
     format: format,
     quality: quality,
     maxPixels: maxPixels,
+    adjustments: adjustments,
   );
   return File(path).writeAsBytes(bytes);
 }

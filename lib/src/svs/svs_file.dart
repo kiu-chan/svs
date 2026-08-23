@@ -10,6 +10,7 @@ import '../tiff/predictor.dart';
 import '../tiff/raster.dart';
 import '../tiff/tiff_file.dart';
 import 'aperio_tags.dart';
+import 'svs_file_info.dart';
 import 'svs_metadata.dart';
 
 const _rawRasterCompressions = {
@@ -197,6 +198,14 @@ class SvsAssociatedImage {
     final remaining = height - i * _rowsPerStrip!;
     return remaining < _rowsPerStrip! ? remaining : _rowsPerStrip!;
   }
+
+  /// Every TIFF tag on this associated image's IFD, decoded — the "full
+  /// info" dump for this image. See [TiffIfd.readAllValues].
+  Future<Map<int, Object>> readAllTags() => _ifd.readAllValues();
+
+  /// Just [ids] of this associated image's IFD tags, decoded — the
+  /// "partial info" counterpart to [readAllTags].
+  Future<Map<int, Object>> readTags(Iterable<int> ids) => _ifd.readValues(ids);
 }
 
 /// The pure geometric facts about one pyramid level, independent of whether
@@ -357,6 +366,14 @@ class SvsLevel {
       samplesPerPixel: decoded.numComponents,
     );
   }
+
+  /// Every TIFF tag on this level's IFD, decoded — the "full info" dump for
+  /// this level. See [TiffIfd.readAllValues].
+  Future<Map<int, Object>> readAllTags() => _ifd.readAllValues();
+
+  /// Just [ids] of this level's IFD tags, decoded — the "partial info"
+  /// counterpart to [readAllTags].
+  Future<Map<int, Object>> readTags(Iterable<int> ids) => _ifd.readValues(ids);
 }
 
 /// An open Aperio SVS file: the resolution pyramid, any associated images,
@@ -533,4 +550,33 @@ class SvsFile {
   }
 
   Future<void> close() => _tiff.close();
+
+  /// A full structured dump of every TIFF tag on every pyramid level and
+  /// associated image, plus this file's own container facts — the "full
+  /// info" one-call counterpart to the narrower accessors already on this
+  /// class ([levels], [associatedImages], [metadata]) and on [SvsLevel]/
+  /// [SvsAssociatedImage] ([SvsLevel.readTags], [SvsAssociatedImage.readTags])
+  /// for callers that only need specific fields.
+  Future<SvsFileInfo> readInfo() async {
+    final levelInfos = <SvsIfdInfo>[];
+    for (final level in levels) {
+      levelInfos.add(
+        SvsIfdInfo(index: level.index, tags: await level.readAllTags()),
+      );
+    }
+    final associatedInfos = <SvsIfdInfo>[];
+    for (final image in associatedImages) {
+      associatedInfos.add(
+        SvsIfdInfo(index: image.ifdIndex, tags: await image.readAllTags()),
+      );
+    }
+    return SvsFileInfo(
+      path: path,
+      isBigTiff: _tiff.header.kind == TiffKind.bigTiff,
+      byteOrder: _tiff.header.byteOrder,
+      metadata: metadata,
+      levels: levelInfos,
+      associatedImages: associatedInfos,
+    );
+  }
 }

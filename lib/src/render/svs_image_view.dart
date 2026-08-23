@@ -12,6 +12,7 @@ import '../cache/disk_tile_cache.dart';
 import '../cache/tile_cache.dart';
 import '../svs/svs_file.dart';
 import 'associated_image_decoder.dart';
+import 'image_adjustments.dart';
 import 'lod_controller.dart';
 import 'viewport_math.dart';
 
@@ -70,6 +71,12 @@ class SvsImageView extends StatefulWidget {
   /// microns-per-pixel metadata. Ignored if [annotationController] is null.
   final bool showMeasurements;
 
+  /// Brightness/contrast/shadow/highlight adjustment applied to every
+  /// rendered tile. Left at [SvsImageAdjustments.none] (the default), tiles
+  /// render unmodified. Cheap to change on every frame (e.g. from a slider)
+  /// — it's a GPU color filter, not a per-tile re-decode.
+  final SvsImageAdjustments adjustments;
+
   const SvsImageView({
     super.key,
     required this.svsFile,
@@ -82,6 +89,7 @@ class SvsImageView extends StatefulWidget {
     this.onAnnotationTap,
     this.hitTestTolerance = 12,
     this.showMeasurements = true,
+    this.adjustments = SvsImageAdjustments.none,
   });
 
   @override
@@ -343,6 +351,7 @@ class _SvsImageViewState extends State<SvsImageView>
                       scale: _scale,
                       origin: _origin,
                       maxUpsample: widget.maxUpsample,
+                      adjustments: widget.adjustments,
                     ),
                   ),
                 ),
@@ -405,6 +414,7 @@ class _TilePainter extends CustomPainter {
   final double scale;
   final Offset origin;
   final double maxUpsample;
+  final SvsImageAdjustments adjustments;
 
   _TilePainter({
     required this.svsFile,
@@ -412,6 +422,7 @@ class _TilePainter extends CustomPainter {
     required this.scale,
     required this.origin,
     required this.maxUpsample,
+    required this.adjustments,
   });
 
   // Anti-aliased edges on abutting tile rects each blend independently
@@ -420,9 +431,13 @@ class _TilePainter extends CustomPainter {
   // seam of under-covered background color. Disabling AA here makes each
   // edge snap to whole device pixels instead, so neighboring tiles cover
   // each other's border pixel completely.
-  static final _imagePaint = Paint()
+  //
+  // Not `static`/shared: `colorFilter` varies per [adjustments], and
+  // different `SvsImageView`s can have different adjustments at once.
+  late final _imagePaint = Paint()
     ..filterQuality = FilterQuality.medium
-    ..isAntiAlias = false;
+    ..isAntiAlias = false
+    ..colorFilter = adjustments.toColorFilter();
   static final _placeholderPaint = Paint()
     ..color = const Color(0xFFE0E0E0)
     ..isAntiAlias = false;
