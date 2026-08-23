@@ -1,3 +1,22 @@
+## 0.3.0
+
+* `SvsAnnotationController`, `SvsAnnotation`: draw and manage point,
+  rectangle, polyline, and polygon annotations over an `SvsImageView`,
+  anchored in level-0 pixel space so they stay put across pan/zoom. Pass a
+  controller to `SvsImageView.annotationController` to render its
+  annotations and route pointer gestures to it while `drawMode` isn't
+  `SvsAnnotationDrawMode.none` — point mode commits on tap, rectangle mode
+  draws on drag, polyline/polygon mode adds a vertex per tap (call
+  `finishPath()` to commit). Tapping in view mode (`drawMode.none`)
+  hit-tests and auto-selects an existing annotation, and fires the new
+  `SvsImageView.onAnnotationTap` callback. Annotations round-trip to JSON
+  via `SvsAnnotationController.toJsonList`/`loadFromJsonList`.
+* `measureAnnotation`: physical length (and, for rectangles/polygons, area)
+  of an `SvsAnnotation`, computed from the slide's microns-per-pixel.
+  `SvsImageView` shows this as a live label on line/rectangle/polygon
+  annotations — including the one being drawn, so drawing doubles as a
+  ruler — toggle with the new `SvsImageView.showMeasurements`.
+
 ## 0.2.0
 
 * `readSvsRegion`: crops an arbitrary rectangle of any pyramid level to a

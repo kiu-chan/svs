@@ -26,6 +26,13 @@ never loaded into memory, however large the slide.
 * **Region cropping** (`readSvsRegion`): decode an arbitrary rectangle of any
   pyramid level to a single composited image, without loading the whole
   level.
+* **Annotations** (`SvsAnnotationController`): draw points, rectangles,
+  polylines, and polygons over the slide — anchored in level-0 pixel space,
+  so they stay put across pan/zoom — with tap-to-select, hit-testing, and
+  JSON persistence.
+* **Measurement** (`measureAnnotation`): live physical length/area labels on
+  line, rectangle, and polygon annotations (including while drawing),
+  computed from the slide's own microns-per-pixel metadata.
 * **Export to common image formats** (`exportSvsRegion`, `exportAssociatedImage`,
   `exportSvsLevel`): encode a crop, an associated image, or a whole pyramid
   level to PNG, JPEG, BMP, TIFF, or WebP bytes.
@@ -134,6 +141,74 @@ an explicit opt-in — level 0 of a real slide can be 100,000+ px per side,
 and compositing/re-encoding one whole-hog can mean gigabytes of RAM and a
 multi-minute encode. Crop with `exportSvsRegion` or target a coarser level
 instead unless you really need the full-resolution export.
+
+### Annotations
+
+`SvsAnnotationController` owns the annotations drawn over an `SvsImageView`
+and the interactive state of drawing a new one. Pass the same controller to
+the view; it renders the annotations and routes pointer gestures to build
+new shapes while `drawMode` isn't `SvsAnnotationDrawMode.none`:
+
+```dart
+final annotations = SvsAnnotationController(drawColor: Colors.red);
+
+SvsImageView(
+  svsFile: svsFile,
+  annotationController: annotations,
+  onAnnotationTap: (a) => print('tapped ${a?.id}'),
+);
+
+// Start drawing a rectangle — a press-drag-release on the view now draws
+// one instead of panning. Switch back to `.none` to resume pan/zoom.
+annotations.drawMode = SvsAnnotationDrawMode.rectangle;
+
+// Point mode: each tap commits a point immediately.
+annotations.drawMode = SvsAnnotationDrawMode.point;
+
+// Polygon/polyline mode: each tap adds a vertex; call finishPath() (e.g.
+// from a "Done" button) once there are enough.
+annotations.drawMode = SvsAnnotationDrawMode.polygon;
+// ...taps happen via the view...
+annotations.finishPath();
+```
+
+`SvsAnnotationController.annotations` is a live `List<SvsAnnotation>`;
+`add`, `remove`, `update`, and `clear` all notify listeners (including the
+view). Tapping the view while `drawMode` is `none` hit-tests existing
+annotations, auto-selects the one hit (or clears selection on a miss), and
+calls `onAnnotationTap`.
+
+Every `SvsAnnotation`'s `points` are in level-0 pixel coordinates, so they
+stay valid across pan and zoom. Persist a set with `toJsonList()` /
+`loadFromJsonList()` (JSON-safe maps — round-trip through `jsonEncode`/
+`jsonDecode` yourself):
+
+```dart
+final jsonString = jsonEncode(annotations.toJsonList());
+// ...later...
+annotations.loadFromJsonList(jsonDecode(jsonString) as List);
+```
+
+### Measurement
+
+Whenever the slide has microns-per-pixel metadata (`SvsFile.metadata.mppX`/
+`mppY`), `SvsImageView` shows a live length/area label on every polyline,
+rectangle, and polygon annotation — including the one currently being
+drawn, so dragging out a rectangle or placing polygon vertices doubles as a
+ruler. Set `showMeasurements: false` to turn the labels off.
+
+The same computation is available directly via `measureAnnotation`, for
+measuring annotations outside the view (e.g. in a report):
+
+```dart
+final m = measureAnnotation(
+  annotation,
+  mppX: svsFile.metadata.mppX,
+  mppY: svsFile.metadata.mppY,
+);
+print(m.lengthMicrons); // null if unmeasurable (e.g. a point, or no mpp)
+print(m.areaMicronsSquared); // null for point/polyline shapes
+```
 
 See [`example/`](example/) for a minimal runnable app, or
 [`svs_example`](https://github.com/kiu-chan/svs_example) for a

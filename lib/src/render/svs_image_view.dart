@@ -5,6 +5,9 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
 
+import '../annotation/svs_annotation.dart';
+import '../annotation/svs_annotation_controller.dart';
+import '../annotation/svs_measurement.dart';
 import '../cache/tile_cache.dart';
 import '../svs/svs_file.dart';
 import 'associated_image_decoder.dart';
@@ -35,6 +38,28 @@ class SvsImageView extends StatefulWidget {
   /// a short distance doesn't show blank tiles while they decode.
   final int prefetchMargin;
 
+  /// When set, renders its annotations over the slide and routes pointer
+  /// gestures to it while [SvsAnnotationController.drawMode] isn't
+  /// [SvsAnnotationDrawMode.none] — see that class for the drawing gestures
+  /// each mode uses. Left null (the default), the view is pan/zoom only.
+  final SvsAnnotationController? annotationController;
+
+  /// Called with the annotation tapped while [annotationController]'s
+  /// `drawMode` is [SvsAnnotationDrawMode.none] (null if the tap didn't hit
+  /// one). The tapped annotation is also auto-selected on
+  /// [annotationController]; use this to react further, e.g. show an editor.
+  final ValueChanged<SvsAnnotation?>? onAnnotationTap;
+
+  /// How close (in screen pixels) a tap must land to an annotation's
+  /// outline/interior to count as hitting it.
+  final double hitTestTolerance;
+
+  /// Whether line/rectangle/polygon annotations (including the one
+  /// currently being drawn) show a live physical length/area label, using
+  /// [SvsFile.metadata]'s microns-per-pixel. No effect if the slide has no
+  /// microns-per-pixel metadata. Ignored if [annotationController] is null.
+  final bool showMeasurements;
+
   const SvsImageView({
     super.key,
     required this.svsFile,
@@ -42,6 +67,10 @@ class SvsImageView extends StatefulWidget {
     this.maxUpsample = 1.3,
     this.maxScale = 4.0,
     this.prefetchMargin = 1,
+    this.annotationController,
+    this.onAnnotationTap,
+    this.hitTestTolerance = 12,
+    this.showMeasurements = true,
   });
 
   @override
@@ -151,13 +180,28 @@ class _SvsImageViewState extends State<SvsImageView>
     _lod.flushNow(viewportSize, _scale, _origin);
   }
 
+  Offset _toLevel0(Offset screenPoint) => _origin + screenPoint / _scale;
+
+  bool get _isDraftingRect =>
+      widget.annotationController?.drawMode == SvsAnnotationDrawMode.rectangle;
+
   void _onScaleStart(ScaleStartDetails details) {
+    final controller = widget.annotationController;
+    if (controller != null && _isDraftingRect) {
+      controller.startRectDraft(_toLevel0(details.localFocalPoint));
+      return;
+    }
     _gestureStartScale = _scale;
     _gestureStartOrigin = _origin;
     _gestureStartFocalPoint = details.localFocalPoint;
   }
 
   void _onScaleUpdate(ScaleUpdateDetails details) {
+    final controller = widget.annotationController;
+    if (controller != null && _isDraftingRect && controller.draft != null) {
+      controller.updateRectDraft(_toLevel0(details.localFocalPoint));
+      return;
+    }
     _zoomAndPanTo(
       startScale: _gestureStartScale,
       startOrigin: _gestureStartOrigin,
@@ -169,7 +213,34 @@ class _SvsImageViewState extends State<SvsImageView>
   }
 
   void _onScaleEnd(ScaleEndDetails details) {
+    final controller = widget.annotationController;
+    if (controller != null && _isDraftingRect && controller.draft != null) {
+      controller.commitRectDraft();
+      return;
+    }
     _lod.flushNow(_viewportSize!, _scale, _origin);
+  }
+
+  void _onTapUp(TapUpDetails details) {
+    final controller = widget.annotationController;
+    if (controller == null) return;
+    final level0Point = _toLevel0(details.localPosition);
+    switch (controller.drawMode) {
+      case SvsAnnotationDrawMode.point:
+        controller.commitPoint(level0Point);
+      case SvsAnnotationDrawMode.polygon:
+      case SvsAnnotationDrawMode.polyline:
+        controller.addPathPoint(level0Point);
+      case SvsAnnotationDrawMode.none:
+        final hit = controller.hitTest(
+          level0Point,
+          widget.hitTestTolerance / _scale,
+        );
+        controller.select(hit?.id);
+        widget.onAnnotationTap?.call(hit);
+      case SvsAnnotationDrawMode.rectangle:
+        break; // handled by the drag gestures above
+    }
   }
 
   void _onPointerSignal(PointerSignalEvent event) {
@@ -249,6 +320,9 @@ class _SvsImageViewState extends State<SvsImageView>
                   onScaleStart: _onScaleStart,
                   onScaleUpdate: _onScaleUpdate,
                   onScaleEnd: _onScaleEnd,
+                  onTapUp: widget.annotationController == null
+                      ? null
+                      : _onTapUp,
                   child: CustomPaint(
                     size: viewportSize,
                     painter: _TilePainter(
@@ -261,6 +335,28 @@ class _SvsImageViewState extends State<SvsImageView>
                   ),
                 ),
               ),
+              if (widget.annotationController != null)
+                IgnorePointer(
+                  child: AnimatedBuilder(
+                    animation: widget.annotationController!,
+                    builder: (context, _) => CustomPaint(
+                      size: viewportSize,
+                      painter: _AnnotationPainter(
+                        annotations: widget.annotationController!.annotations,
+                        draft: widget.annotationController!.draft,
+                        selectedId: widget.annotationController!.selectedId,
+                        scale: _scale,
+                        origin: _origin,
+                        mppX: widget.showMeasurements
+                            ? widget.svsFile.metadata.mppX
+                            : null,
+                        mppY: widget.showMeasurements
+                            ? widget.svsFile.metadata.mppY
+                            : null,
+                      ),
+                    ),
+                  ),
+                ),
               Positioned(
                 left: 12,
                 bottom: 12,
@@ -425,6 +521,163 @@ class _TilePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _TilePainter oldDelegate) => true;
+}
+
+/// Renders [SvsAnnotationController.annotations] (plus the in-progress
+/// [SvsAnnotationController.draft], if any) over the tile layer, mapping
+/// each annotation's level-0 points through the same `scale`/`origin`
+/// transform [_TilePainter] uses for tiles.
+class _AnnotationPainter extends CustomPainter {
+  final List<SvsAnnotation> annotations;
+  final SvsAnnotation? draft;
+  final String? selectedId;
+  final double scale;
+  final Offset origin;
+
+  /// Slide microns-per-pixel; null suppresses measurement labels entirely
+  /// (either [SvsImageView.showMeasurements] is false or the slide has no
+  /// microns-per-pixel metadata).
+  final double? mppX;
+  final double? mppY;
+
+  _AnnotationPainter({
+    required this.annotations,
+    required this.draft,
+    required this.selectedId,
+    required this.scale,
+    required this.origin,
+    required this.mppX,
+    required this.mppY,
+  });
+
+  static const _selectionColor = Color(0xFF2196F3);
+  static const _vertexRadius = 4.0;
+  static const _pointRadius = 6.0;
+
+  Offset _toScreen(Offset level0Point) => (level0Point - origin) * scale;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final annotation in annotations) {
+      _paintShape(canvas, annotation, selected: annotation.id == selectedId);
+    }
+    final draft = this.draft;
+    if (draft != null) {
+      _paintShape(canvas, draft, selected: false, isDraft: true);
+    }
+  }
+
+  void _paintShape(
+    Canvas canvas,
+    SvsAnnotation annotation, {
+    required bool selected,
+    bool isDraft = false,
+  }) {
+    final baseColor = selected ? _selectionColor : annotation.color;
+    final strokeColor = isDraft
+        ? baseColor.withValues(alpha: 0.7)
+        : baseColor;
+    final strokePaint = Paint()
+      ..color = strokeColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = selected
+          ? annotation.strokeWidth + 1.5
+          : annotation.strokeWidth;
+    final fillPaint = annotation.filled
+        ? (Paint()..color = strokeColor.withValues(alpha: 0.25))
+        : null;
+
+    Offset? labelAnchor;
+
+    switch (annotation.type) {
+      case SvsAnnotationShapeType.point:
+        final center = _toScreen(annotation.points.first);
+        canvas.drawCircle(center, _pointRadius, Paint()..color = strokeColor);
+        canvas.drawCircle(
+          center,
+          _pointRadius,
+          Paint()
+            ..color = const Color(0xFFFFFFFF)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5,
+        );
+      case SvsAnnotationShapeType.rectangle:
+        if (annotation.points.length < 2) return;
+        final rect = Rect.fromPoints(
+          _toScreen(annotation.points[0]),
+          _toScreen(annotation.points[1]),
+        );
+        if (fillPaint != null) canvas.drawRect(rect, fillPaint);
+        canvas.drawRect(rect, strokePaint);
+        labelAnchor = rect.center;
+      case SvsAnnotationShapeType.polyline:
+      case SvsAnnotationShapeType.polygon:
+        if (annotation.points.isEmpty) return;
+        final screenPoints = annotation.points.map(_toScreen).toList();
+        final path = Path()
+          ..moveTo(screenPoints.first.dx, screenPoints.first.dy);
+        for (final p in screenPoints.skip(1)) {
+          path.lineTo(p.dx, p.dy);
+        }
+        if (annotation.type == SvsAnnotationShapeType.polygon) path.close();
+        if (fillPaint != null &&
+            annotation.type == SvsAnnotationShapeType.polygon) {
+          canvas.drawPath(path, fillPaint);
+        }
+        canvas.drawPath(path, strokePaint);
+        if (isDraft) {
+          for (final p in screenPoints) {
+            canvas.drawCircle(p, _vertexRadius, Paint()..color = strokeColor);
+          }
+        }
+        labelAnchor =
+            screenPoints.reduce((a, b) => a + b) / screenPoints.length.toDouble();
+    }
+
+    if (labelAnchor != null) {
+      final measurement = measureAnnotation(
+        annotation,
+        mppX: mppX,
+        mppY: mppY,
+      );
+      final length = measurement.lengthMicrons;
+      if (length != null) {
+        final area = measurement.areaMicronsSquared;
+        final text = area == null
+            ? formatMicrons(length)
+            : '${formatMicrons(length)}  (${formatMicronsSquared(area)})';
+        _drawLabel(canvas, labelAnchor, text);
+      }
+    }
+  }
+
+  void _drawLabel(Canvas canvas, Offset anchor, String text) {
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: const TextStyle(
+          color: Color(0xFFFFFFFF),
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final textOrigin =
+        anchor - Offset(textPainter.width / 2, textPainter.height / 2);
+    final background = Paint()..color = const Color(0xB0000000);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        (textOrigin & textPainter.size).inflate(3),
+        const Radius.circular(3),
+      ),
+      background,
+    );
+    textPainter.paint(canvas, textOrigin);
+  }
+
+  @override
+  bool shouldRepaint(covariant _AnnotationPainter oldDelegate) => true;
 }
 
 /// Bottom-left HUD: current zoom percentage (100% = one screen pixel per
