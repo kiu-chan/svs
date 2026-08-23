@@ -233,29 +233,44 @@ class LodController extends ChangeNotifier {
         return;
       }
 
-      // Persist a freshly-decoded tile (not one that just came from the
-      // disk cache itself) before it's handed to the memory cache, which
-      // may evict and dispose *other* entries but never touches this one
-      // until after cache.put below.
-      if (disk != null && !fromDisk) {
-        final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
-        if (data != null) {
-          unawaited(
-            disk.put(
-              key,
-              data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
-              image.width,
-              image.height,
-            ),
-          );
-        }
-      }
-
+      // No `await` between here and notifyListeners — otherwise a dispose
+      // (or a re-triggered fetch of this same key, now that it's neither
+      // in-flight nor cached) could race in through the gap.
       cache.put(key, image, image.width * image.height * 4);
       if (_isStillWanted(key)) notifyListeners();
+
+      // Persist a freshly-decoded tile (not one that just came from the
+      // disk cache itself) *after* the tile is already visible — the GPU
+      // pixel readback this needs shouldn't delay the tile's first paint,
+      // and the disk write itself is fire-and-forget.
+      if (disk != null && !fromDisk) {
+        unawaited(_persistToDisk(disk, key, image));
+      }
     } catch (_) {
       _inFlight.remove(key);
       // Leave this tile blank rather than letting one bad tile crash the view.
+    }
+  }
+
+  /// Best-effort: a failure here (including the image having been disposed
+  /// out from under us by a memory-cache eviction that raced in first) just
+  /// means this tile isn't cached to disk, not a decode failure.
+  Future<void> _persistToDisk(
+    DiskTileCache disk,
+    TileCacheKey key,
+    ui.Image image,
+  ) async {
+    try {
+      final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      if (data == null) return;
+      await disk.put(
+        key,
+        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+        image.width,
+        image.height,
+      );
+    } catch (_) {
+      // See doc comment above.
     }
   }
 

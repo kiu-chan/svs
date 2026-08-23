@@ -91,6 +91,22 @@ void main() {
     expect(await cache.get(keyB), isNull);
   });
 
+  test(
+    'a single tile larger than maxBytes on its own is kept, not '
+    'self-evicted the instant it is written',
+    () async {
+      // A 1x1 tile is 4 + 8 header = 12 bytes, over a 10-byte budget.
+      final cache = await DiskTileCache.open(tempDir, maxBytes: 10);
+      const key = TileCacheKey(level: 0, tileX: 0, tileY: 0);
+
+      await cache.put(key, _pixels(1, 1, 1), 1, 1);
+
+      expect(cache.contains(key), isTrue);
+      expect(cache.currentBytes, 12); // over budget, and that's fine
+      expect(await cache.get(key), isNotNull);
+    },
+  );
+
   test('open() rebuilds its index from tile files already on disk', () async {
     const key = TileCacheKey(level: 2, tileX: 5, tileY: 7);
     final original = _pixels(3, 3, 99);

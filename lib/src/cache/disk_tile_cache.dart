@@ -122,13 +122,19 @@ class DiskTileCache {
 
     final existing = _entries.remove(key);
     if (existing != null) _currentBytes -= existing.byteSize;
+
+    // Evict *before* inserting the new entry, same as TileCache.put — so a
+    // single tile larger than maxBytes on its own is kept (temporarily
+    // exceeding the budget) rather than being deleted the instant it's
+    // written, and eviction only ever touches other, older entries.
+    await _evictIfNeeded(reserve: payload.length);
+
     _entries[key] = _DiskEntry(file: file, byteSize: payload.length);
     _currentBytes += payload.length;
-    await _evictIfNeeded();
   }
 
-  Future<void> _evictIfNeeded() async {
-    while (_entries.isNotEmpty && _currentBytes > maxBytes) {
+  Future<void> _evictIfNeeded({int reserve = 0}) async {
+    while (_entries.isNotEmpty && _currentBytes + reserve > maxBytes) {
       final oldest = _entries.remove(_entries.keys.first)!;
       _currentBytes -= oldest.byteSize;
       try {
