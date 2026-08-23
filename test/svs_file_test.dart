@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:svs/src/errors.dart';
+import 'package:svs/src/svs/aperio_tags.dart';
 import 'package:svs/src/svs/svs_file.dart';
 import 'package:svs/src/tiff/tiff_types.dart';
 
@@ -138,6 +139,22 @@ void main() {
     );
     final path = await writeBytes(bytes);
     await expectLater(SvsFile.open(path), throwsA(isA<SvsUnsupportedCompressionError>()));
+  });
+
+  test('accepts a JPEG2000-compressed pyramid level at open time', () async {
+    // Only proves the open-time gate no longer rejects Compression=33005 —
+    // actually decoding real J2K codestream bytes is covered by the real
+    // sample file integration test (openjpeg_ffi needs a genuine
+    // codestream, not synthetic placeholder bytes).
+    final bytes = buildTiff(
+      bigTiff: false,
+      order: Endian.little,
+      ifds: [tiledLevelTags(width: 256, height: 256, tileSize: 256, compression: ApCompression.jp2k)],
+    );
+    final path = await writeBytes(bytes);
+    final svs = await SvsFile.open(path);
+    addTearDown(svs.close);
+    expect(svs.levels.single.isJp2k, isTrue);
   });
 
   test('rejects a file with no tiled levels at all', () async {

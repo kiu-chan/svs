@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:openjpeg_ffi/openjpeg_ffi.dart';
+
 import '../errors.dart';
 import '../jpeg/jpeg_tables.dart';
 import '../tiff/compression/tiff_decompress.dart';
@@ -17,6 +19,8 @@ const _rawRasterCompressions = {
   ApCompression.packBits,
   ApCompression.deflateAdobe,
 };
+
+const _supportedLevelCompressions = {ApCompression.newJpeg, ApCompression.jp2k};
 
 enum AssociatedImageKind { label, macro, thumbnail }
 
@@ -189,6 +193,7 @@ class SvsLevelGeometry {
   final int height;
   final int tileWidth;
   final int tileLength;
+  final int compression;
 
   /// `level0.width / width`. Real Aperio files are usually close to exact
   /// powers of 2 but this is computed, never assumed.
@@ -200,6 +205,7 @@ class SvsLevelGeometry {
     required this.height,
     required this.tileWidth,
     required this.tileLength,
+    required this.compression,
     required this.downsample,
   });
 
@@ -219,9 +225,13 @@ class SvsLevel {
   int get height => geometry.height;
   int get tileWidth => geometry.tileWidth;
   int get tileLength => geometry.tileLength;
+  int get compression => geometry.compression;
   double get downsample => geometry.downsample;
   int get tilesAcrossX => geometry.tilesAcrossX;
   int get tilesAcrossY => geometry.tilesAcrossY;
+
+  bool get isJpeg => compression == ApCompression.newJpeg;
+  bool get isJp2k => compression == ApCompression.jp2k;
 
   final TiffFile _file;
   final TiffIfd _ifd;
@@ -258,10 +268,11 @@ class SvsLevel {
     return _jpegTables;
   }
 
-  /// The spliced, standalone-decodable JPEG bytes for tile ([tx], [ty]).
-  /// Empty for a sparse tile (byte count 0 in the file) — callers should
-  /// treat that as blank rather than attempt to decode it.
-  Future<Uint8List> readTileJpegBytes(int tx, int ty) async {
+  /// Raw (still-compressed) bytes for tile ([tx], [ty]) straight off disk —
+  /// empty for a sparse tile (byte count 0 in the file). Shared by
+  /// [readTileJpegBytes] and [readTileRgba], which each interpret those
+  /// bytes according to [compression].
+  Future<Uint8List> _readRawTileBytes(int tx, int ty) async {
     await _ensureTileTablesLoaded();
     final tilesX = tilesAcrossX;
     final tilesY = tilesAcrossY;
@@ -274,9 +285,36 @@ class SvsLevel {
     if (byteCount == 0) return Uint8List(0);
 
     final offset = _tileOffsets![i];
-    final rawTile = await _file.readBytes(offset, byteCount);
+    return _file.readBytes(offset, byteCount);
+  }
+
+  /// The spliced, standalone-decodable JPEG bytes for tile ([tx], [ty]).
+  /// Empty for a sparse tile — callers should treat that as blank rather
+  /// than attempt to decode it. Only valid when [isJpeg]; use
+  /// [readTileRgba] for [isJp2k] instead.
+  Future<Uint8List> readTileJpegBytes(int tx, int ty) async {
+    final rawTile = await _readRawTileBytes(tx, ty);
+    if (rawTile.isEmpty) return rawTile;
     final tables = await _loadJpegTables();
     return spliceJpegTile(tables, rawTile);
+  }
+
+  /// The decoded RGBA8888 bytes for tile ([tx], [ty]), tightly packed —
+  /// empty for a sparse tile. Only valid when [isJp2k]; use
+  /// [readTileJpegBytes] for [isJpeg] instead.
+  ///
+  /// Decoding happens via `openjpeg_ffi` (native OpenJPEG) — see
+  /// [Jp2kDecodeException] for how decode failures surface.
+  Future<Uint8List> readTileRgba(int tx, int ty) async {
+    final rawTile = await _readRawTileBytes(tx, ty);
+    if (rawTile.isEmpty) return rawTile;
+    final Jp2kImage decoded;
+    try {
+      decoded = decodeJ2k(rawTile);
+    } on Jp2kDecodeException catch (e) {
+      throw TileIoException(index, tx, ty, 'JPEG2000 decode failed: ${e.message}');
+    }
+    return expandRgbToRgba(decoded.pixels, width: decoded.width, height: decoded.height, samplesPerPixel: decoded.numComponents);
   }
 }
 
@@ -333,11 +371,12 @@ class SvsFile {
 
       if (isTiled) {
         final compression = await ifd.readInt(ApTag.compression, fallback: ApCompression.newJpeg);
-        if (compression != ApCompression.newJpeg) {
+        if (!_supportedLevelCompressions.contains(compression)) {
           throw SvsUnsupportedCompressionError(
             compression,
             'IFD $i (level ${levels.length}) uses TIFF Compression=$compression, which this '
-            'package cannot decode — only new-style JPEG (Compression=7) is supported',
+            'package cannot decode — only new-style JPEG (Compression=7) and JPEG2000 '
+            '(Compression=${ApCompression.jp2k}) are supported',
           );
         }
         final tileWidth = await ifd.readInt(ApTag.tileWidth);
@@ -351,6 +390,7 @@ class SvsFile {
               height: height,
               tileWidth: tileWidth,
               tileLength: tileLength,
+              compression: compression,
               downsample: baseWidth / width,
             ),
             file: tiff,
@@ -405,6 +445,13 @@ class SvsFile {
       throw SvsFormatException('Level $level out of range (have ${levels.length} levels)');
     }
     return levels[level].readTileJpegBytes(tx, ty);
+  }
+
+  Future<Uint8List> readTileRgba(int level, int tx, int ty) {
+    if (level < 0 || level >= levels.length) {
+      throw SvsFormatException('Level $level out of range (have ${levels.length} levels)');
+    }
+    return levels[level].readTileRgba(tx, ty);
   }
 
   Future<void> close() => _tiff.close();

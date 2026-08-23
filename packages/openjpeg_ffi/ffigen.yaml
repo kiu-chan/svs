@@ -1,0 +1,16 @@
+# Run with `dart run ffigen --config ffigen.yaml`.
+name: OpenjpegFfiBindings
+description: |
+  Bindings for `src/openjpeg_ffi.h`.
+
+  Regenerate bindings with `dart run ffigen --config ffigen.yaml`.
+output: 'lib/openjpeg_ffi_bindings_generated.dart'
+headers:
+  entry-points:
+    - 'src/openjpeg_ffi.h'
+  include-directives:
+    - 'src/openjpeg_ffi.h'
+ffi-native:
+comments:
+  style: any
+  length: full

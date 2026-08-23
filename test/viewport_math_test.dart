@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:svs/src/render/viewport_math.dart';
+import 'package:svs/src/svs/aperio_tags.dart';
 import 'package:svs/src/svs/svs_file.dart';
 
 SvsLevelGeometry _level({required int index, required int width, required int height, required double downsample}) {
@@ -11,6 +12,7 @@ SvsLevelGeometry _level({required int index, required int width, required int he
     height: height,
     tileWidth: 256,
     tileLength: 256,
+    compression: ApCompression.newJpeg,
     downsample: downsample,
   );
 }
