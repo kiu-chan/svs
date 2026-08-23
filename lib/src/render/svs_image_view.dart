@@ -267,38 +267,74 @@ class _TilePainter extends CustomPainter {
 
   _TilePainter({required this.svsFile, required this.cache, required this.scale, required this.origin, required this.maxUpsample});
 
+  // Anti-aliased edges on abutting tile rects each blend independently
+  // against whatever was already painted, which — even when two tiles'
+  // edges land on the exact same coordinate — leaves a visible hairline
+  // seam of under-covered background color. Disabling AA here makes each
+  // edge snap to whole device pixels instead, so neighboring tiles cover
+  // each other's border pixel completely.
+  static final _imagePaint = Paint()
+    ..filterQuality = FilterQuality.medium
+    ..isAntiAlias = false;
+  static final _placeholderPaint = Paint()
+    ..color = const Color(0xFFE0E0E0)
+    ..isAntiAlias = false;
+
   @override
   void paint(Canvas canvas, Size size) {
+    // Flat fallback for any spot neither this level nor the stale-level
+    // fallback below has a decoded tile for yet.
+    canvas.drawRect(Offset.zero & size, _placeholderPaint);
+
     final levels = svsFile.levels;
     final levelIndex = selectLevel(levels.map((l) => l.geometry).toList(growable: false), scale, maxUpsample: maxUpsample);
     final level = levels[levelIndex];
+
+    // While `level`'s own tiles are still decoding, paint whatever
+    // already-cached coarser/finer level covers this viewport underneath,
+    // stretched to the current transform — a blurry preview beats a blank
+    // flash during a fast zoom, and gets progressively covered by `level`'s
+    // sharp tiles as they arrive.
+    final fallbackIndex = _findFallbackLevelIndex(levels, levelIndex, size);
+    if (fallbackIndex != null) {
+      _paintLevelTiles(canvas, levels[fallbackIndex], size);
+    }
+
+    _paintLevelTiles(canvas, level, size);
+  }
+
+  void _paintLevelTiles(Canvas canvas, SvsLevel level, Size size) {
     final visible = computeVisibleTiles(level.geometry, size, scale, origin);
-
-    // Anti-aliased edges on abutting tile rects each blend independently
-    // against whatever was already painted, which — even when two tiles'
-    // edges land on the exact same coordinate — leaves a visible hairline
-    // seam of under-covered background color. Disabling AA here makes each
-    // edge snap to whole device pixels instead, so neighboring tiles cover
-    // each other's border pixel completely.
-    final imagePaint = Paint()
-      ..filterQuality = FilterQuality.medium
-      ..isAntiAlias = false;
-    final placeholderPaint = Paint()
-      ..color = const Color(0xFFE0E0E0)
-      ..isAntiAlias = false;
-
     for (var ty = visible.minTy; ty <= visible.maxTy; ty++) {
       for (var tx = visible.minTx; tx <= visible.maxTx; tx++) {
-        final dst = _tileScreenRect(level, tx, ty);
         final image = cache.get(TileCacheKey(level: level.index, tileX: tx, tileY: ty));
-        if (image != null) {
-          final src = Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
-          canvas.drawImageRect(image, src, dst, imagePaint);
-        } else {
-          canvas.drawRect(dst, placeholderPaint);
+        if (image == null) continue; // background fill / fallback layer shows through
+        final src = Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
+        canvas.drawImageRect(image, src, _tileScreenRect(level, tx, ty), _imagePaint);
+      }
+    }
+  }
+
+  /// The already-cached level closest in index to [targetIndex] (excluding
+  /// it) that has at least one visible tile decoded — checked coarser
+  /// (index+1, +2, …) before finer, since "just zoomed in from a
+  /// fully-loaded overview" is the common case this exists for.
+  int? _findFallbackLevelIndex(List<SvsLevel> levels, int targetIndex, Size size) {
+    for (var d = 1; d < levels.length; d++) {
+      for (final candidate in [targetIndex + d, targetIndex - d]) {
+        if (candidate < 0 || candidate >= levels.length) continue;
+        final geometry = levels[candidate].geometry;
+        final visible = computeVisibleTiles(geometry, size, scale, origin);
+        for (var ty = visible.minTy; ty <= visible.maxTy; ty++) {
+          for (var tx = visible.minTx; tx <= visible.maxTx; tx++) {
+            if (cache.contains(TileCacheKey(level: candidate, tileX: tx, tileY: ty))) {
+              return candidate;
+            }
+          }
         }
       }
     }
+    return null;
   }
 
   // Extends 1 logical pixel past each tile's true right/bottom edge. Two
