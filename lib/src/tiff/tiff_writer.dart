@@ -101,7 +101,11 @@ class _LevelHeaderPlan {
 
 /// Encodes [values] as [type]'s on-disk byte representation — `SHORT`,
 /// `LONG`, or `LONG8` only (the only integer tag types this writer needs).
-Uint8List encodeTiffInts(List<int> values, int type, [Endian order = Endian.little]) {
+Uint8List encodeTiffInts(
+  List<int> values,
+  int type, [
+  Endian order = Endian.little,
+]) {
   final size = tiffTypeSize(type);
   final bytes = Uint8List(size * values.length);
   final data = ByteData.sublistView(bytes);

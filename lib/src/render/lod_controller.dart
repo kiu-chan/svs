@@ -9,7 +9,6 @@ import '../cache/tile_cache.dart';
 import '../io/tile_worker_pool.dart';
 import '../svs/svs_file.dart';
 import 'viewport_math.dart';
-import 'ycbcr_fix.dart';
 
 /// Decides which tiles a given viewport needs, fetches/decodes them (off the
 /// main isolate where possible — see [TileWorkerPool]), writes decoded tiles
@@ -190,34 +189,13 @@ class LodController extends ChangeNotifier {
             // so `level.tileWidth/tileLength` is the correct buffer shape.
             image = await _decodeRgba(bytes, level.tileWidth, level.tileLength);
           } else {
-            // JPEG: the worker only spliced the standalone bytes — the
-            // actual decode must happen here, `dart:ui`'s codec APIs only
-            // work on the main isolate (flutter/flutter#109701).
+            // JPEG: the worker only spliced/RGB-patched the standalone bytes
+            // (see [SvsLevel.readTileJpegBytes]) — the actual decode must
+            // happen here, `dart:ui`'s codec APIs only work on the main
+            // isolate (flutter/flutter#109701).
             final codec = await ui.instantiateImageCodec(bytes);
             final frame = await codec.getNextFrame();
-            if (level.needsYCbCrFix) {
-              final data = await frame.image.toByteData(
-                format: ui.ImageByteFormat.rawRgba,
-              );
-              // A tile at the right/bottom edge of the level can legally
-              // decode smaller than the nominal tile size — use the
-              // frame's *actual* dimensions here, not
-              // level.tileWidth/tileLength, or decodeImageFromPixels gets
-              // fed a buffer of the wrong length.
-              final actualWidth = frame.image.width;
-              final actualHeight = frame.image.height;
-              frame.image.dispose();
-              if (data != null) {
-                final pixels = data.buffer.asUint8List(
-                  data.offsetInBytes,
-                  data.lengthInBytes,
-                );
-                undoSpuriousYCbCr(pixels);
-                image = await _decodeRgba(pixels, actualWidth, actualHeight);
-              }
-            } else {
-              image = frame.image;
-            }
+            image = frame.image;
           }
         }
       }

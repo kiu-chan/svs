@@ -5,7 +5,6 @@ import 'dart:ui' as ui;
 import '../errors.dart';
 import '../svs/svs_file.dart';
 import 'region_blit.dart';
-import 'ycbcr_fix.dart';
 
 /// Decodes an arbitrary rectangular crop of [level] — [x],[y] top-left and
 /// [width]x[height], all in that level's own pixel coordinates (not level-0)
@@ -165,7 +164,6 @@ Future<_DecodedTile?> _decodeTileRgba(SvsLevel level, int tx, int ty) async {
       data.offsetInBytes,
       data.lengthInBytes,
     );
-    if (level.needsYCbCrFix) undoSpuriousYCbCr(bytes);
     return _DecodedTile(w, h, bytes);
   }
 

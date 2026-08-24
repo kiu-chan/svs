@@ -653,8 +653,28 @@ class _TilePainter extends CustomPainter {
     _paintLevelTiles(canvas, level, size);
   }
 
+  /// [level]'s full extent, converted to screen space — a right/bottom-edge
+  /// tile's *decoded* image is routinely padded up to the nominal tile size
+  /// (JPEG requires whole 8x8/16x16 blocks, so an encoder pads a partial
+  /// edge tile with extra rows/columns — typically edge-replicated pixels,
+  /// not blank ones), but [_tileScreenRect] always sizes every tile's `dst`
+  /// rect at the nominal tile size too, regardless of how much of it is real
+  /// coverage. Left unclipped, that padding — which reads as genuine, if
+  /// smeared/stretched, tissue texture rather than obviously-fake content —
+  /// paints past the level's true bottom/right edge and into what should be
+  /// empty space beyond it. Clipping every tile draw to this rect keeps
+  /// padding from ever becoming visible.
+  Rect _levelExtentScreenRect(SvsLevel level) => Rect.fromLTWH(
+    -origin.dx * scale,
+    -origin.dy * scale,
+    level.width * level.downsample * scale,
+    level.height * level.downsample * scale,
+  );
+
   void _paintLevelTiles(Canvas canvas, SvsLevel level, Size size) {
     final visible = computeVisibleTiles(level.geometry, size, scale, origin);
+    canvas.save();
+    canvas.clipRect(_levelExtentScreenRect(level));
     for (var ty = visible.minTy; ty <= visible.maxTy; ty++) {
       for (var tx = visible.minTx; tx <= visible.maxTx; tx++) {
         final image = cache.get(
@@ -677,6 +697,7 @@ class _TilePainter extends CustomPainter {
         );
       }
     }
+    canvas.restore();
   }
 
   /// The already-cached level closest in index to [targetIndex] (excluding
@@ -949,7 +970,11 @@ class _HudOverlay extends StatelessWidget {
                     const SizedBox(height: 10),
                     Text(
                       description,
-                      style: const TextStyle(color: Color(0xFFE0E0E0), fontSize: 13, height: 1.4),
+                      style: const TextStyle(
+                        color: Color(0xFFE0E0E0),
+                        fontSize: 13,
+                        height: 1.4,
+                      ),
                     ),
                     const SizedBox(height: 16),
                     Align(
@@ -958,10 +983,17 @@ class _HudOverlay extends StatelessWidget {
                         onTap: () => Navigator.of(dialogContext).pop(),
                         behavior: HitTestBehavior.opaque,
                         child: const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
                           child: Text(
                             'OK',
-                            style: TextStyle(color: Color(0xFF66B2FF), fontSize: 14, fontWeight: FontWeight.bold),
+                            style: TextStyle(
+                              color: Color(0xFF66B2FF),
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
                         ),
                       ),
@@ -1056,7 +1088,11 @@ class _HudChip extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
 
-  const _HudChip({required this.glyph, required this.label, required this.onTap});
+  const _HudChip({
+    required this.glyph,
+    required this.label,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1076,7 +1112,12 @@ class _HudChip extends StatelessWidget {
             ),
             child: Text(
               glyph,
-              style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 9, fontWeight: FontWeight.bold, height: 1),
+              style: const TextStyle(
+                color: Color(0xFFFFFFFF),
+                fontSize: 9,
+                fontWeight: FontWeight.bold,
+                height: 1,
+              ),
             ),
           ),
           const SizedBox(width: 4),

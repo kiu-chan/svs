@@ -184,7 +184,12 @@ Future<void> _streamSvsRegionAsSvs(
     final sink = _TileSink(raf, specs.length);
     final builders = [
       for (var i = 0; i < specs.length; i++)
-        _LevelBuilder(levelIndex: i, spec: specs[i], quality: quality, sink: sink),
+        _LevelBuilder(
+          levelIndex: i,
+          spec: specs[i],
+          quality: quality,
+          sink: sink,
+        ),
     ];
     for (var i = 0; i < builders.length - 1; i++) {
       builders[i].next = builders[i + 1];

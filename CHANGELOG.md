@@ -1,3 +1,36 @@
+## 1.0.2
+
+* Fixed: a JPEG-compressed slide tile/associated image whose TIFF
+  `PhotometricInterpretation` says `RGB` (literal RGB samples, not
+  YCbCr-encoded — some Aperio files) used to come back with a visible color
+  cast, most noticeable as a gray/lavender tint across the slide's
+  background — `dart:ui`'s JPEG codec has no visibility into that TIFF-level
+  tag, so it always applied a YCbCr->RGB transform the samples never needed,
+  and the previous fix (inverting that transform on the *decoded* pixels)
+  couldn't recover channels the wrong transform had already clipped at 0 or
+  255, which near-white background pixels routinely are. Now fixed at the
+  source: an Adobe `transform=0` marker is inserted into the JPEG bytes
+  before decode, so the codec skips the color transform entirely and decodes
+  the true samples losslessly.
+* Fixed: a JPEG tile at a pyramid level's right or bottom edge is padded up
+  to the full nominal tile size by the encoder (JPEG requires whole-block
+  data); that padding was being drawn at full size along with the rest of
+  the tile, bleeding a strip of stretched/duplicate-looking content past the
+  level's true edge into what should be empty space beyond the slide.
+  `SvsImageView` now clips each level's tiles to that level's real extent.
+* `SvsImageView.fit` (`SvsImageFit.contain`/`cover`) and `backgroundColor`:
+  control how the initial view fits a slide whose aspect ratio doesn't match
+  the viewport's — `contain` (the default, previous/only behavior) letterboxes;
+  `cover` fills the viewport completely, cropping the slide's edges instead.
+  `backgroundColor` (default unchanged) sets the fill for any letterboxed or
+  not-yet-decoded area, so it can be made to match the surrounding UI. Also
+  now documented on the class itself as expected behavior, not a rendering
+  bug.
+* The zoom-percentage HUD chip is now tappable, showing a short explanation
+  of what the percentage means; when the slide's scan magnification
+  (`AppMag`) is known, a second, also-tappable magnification chip (e.g.
+  "20x") sits next to it.
+
 ## 1.0.1
 
 * `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsToFile`: no pixel-count limit by

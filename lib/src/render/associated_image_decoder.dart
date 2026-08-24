@@ -3,9 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import '../errors.dart';
-import '../svs/aperio_tags.dart';
 import '../svs/svs_file.dart';
-import 'ycbcr_fix.dart';
 
 /// Decodes [image] to a single composited [ui.Image] spanning its full
 /// dimensions.
@@ -37,16 +35,12 @@ Future<ui.Image> decodeAssociatedImage(SvsAssociatedImage image) async {
 Future<ui.Image> _decodeJpegStrips(SvsAssociatedImage image) async {
   final stripCount = await image.stripCount;
   final rowsPerStrip = await image.rowsPerStrip;
-  // Aperio writes these JPEG strips with TIFF PhotometricInterpretation=RGB
-  // — i.e. literal RGB samples, no YCbCr transform. `dart:ui`'s decoder has
-  // no visibility into that TIFF-level tag (it's outside the JPEG stream
-  // itself), so it always assumes YCbCr and applies an unwanted conversion.
-  // _undoSpuriousYCbCr reverses exactly that.
-  final needsRgbFix = image.photometricInterpretation == ApPhotometric.rgb;
   final pixels = Uint8List(image.width * image.height * 4);
   var decodedAny = false;
 
   for (var i = 0; i < stripCount; i++) {
+    // Already has its component IDs patched for a literal-RGB decode when
+    // image.needsYCbCrFix — see that getter's doc comment.
     final bytes = await image.readStripJpegBytes(i);
     if (bytes.isEmpty) continue;
     try {
@@ -62,7 +56,6 @@ Future<ui.Image> _decodeJpegStrips(SvsAssociatedImage image) async {
         stripRgba.offsetInBytes,
         stripRgba.lengthInBytes,
       );
-      if (needsRgbFix) undoSpuriousYCbCr(stripBytes);
       final byteOffset = i * rowsPerStrip * image.width * 4;
       pixels.setRange(byteOffset, byteOffset + stripBytes.length, stripBytes);
       decodedAny = true;

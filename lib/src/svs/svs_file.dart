@@ -57,6 +57,13 @@ class SvsAssociatedImage {
   /// plus `dart:ui`'s own JPEG codec.
   bool get isJpeg => compression == ApCompression.newJpeg;
 
+  /// Whether this image's JPEG strips need `forceRgbColorTransform` (in
+  /// `jpeg/jpeg_tables.dart`) applied before decode — see that function's
+  /// doc comment, and [SvsLevel.needsYCbCrFix] for the pyramid-tile
+  /// equivalent of this same Aperio quirk.
+  bool get needsYCbCrFix =>
+      isJpeg && photometricInterpretation == ApPhotometric.rgb;
+
   /// False when this package can't decode this image's pixels. True for
   /// [isJpeg], and for the handled raw-raster compressions (LZW/PackBits/
   /// Deflate/none) *if* their sample layout is one this package understands
@@ -142,7 +149,9 @@ class SvsAssociatedImage {
 
   /// The spliced, standalone-decodable JPEG bytes for strip [i] alone —
   /// covering rows `[i * rowsPerStrip, min((i + 1) * rowsPerStrip, height))`
-  /// of the image. Empty for a sparse strip (byte count 0 in the file).
+  /// of the image, with an Adobe `transform=0` marker inserted first (see
+  /// [forceRgbColorTransform]) when [needsYCbCrFix]. Empty for a sparse
+  /// strip (byte count 0 in the file).
   ///
   /// Throws [SvsUnsupportedCompressionError] if [isJpeg] is false — check
   /// that first (a non-JPEG image may still be decodable via
@@ -162,7 +171,8 @@ class SvsAssociatedImage {
 
     final raw = await _file.readBytes(_stripOffsets![i], byteCount);
     final tables = await _loadJpegTables();
-    return spliceJpegTile(tables, raw);
+    final spliced = spliceJpegTile(tables, raw);
+    return needsYCbCrFix ? forceRgbColorTransform(spliced) : spliced;
   }
 
   /// The decoded RGBA8888 bytes for strip [i] alone, tightly packed — same
@@ -278,11 +288,10 @@ class SvsLevel {
   bool get isJpeg => compression == ApCompression.newJpeg;
   bool get isJp2k => compression == ApCompression.jp2k;
 
-  /// Whether this level's JPEG tiles need `undoSpuriousYCbCr` (in
-  /// `render/ycbcr_fix.dart`) applied after decode — see that function's doc
-  /// comment for why. Only relevant when
-  /// [isJpeg]; JP2K tiles are decoded by `openjpeg_ffi`, which has no
-  /// equivalent blind spot.
+  /// Whether this level's JPEG tiles need `forceRgbColorTransform` (in
+  /// `jpeg/jpeg_tables.dart`) applied before decode — see that function's
+  /// doc comment for why. Only relevant when [isJpeg]; JP2K tiles are
+  /// decoded by `openjpeg_ffi`, which has no equivalent blind spot.
   bool get needsYCbCrFix =>
       isJpeg && photometricInterpretation == ApPhotometric.rgb;
 
@@ -343,15 +352,18 @@ class SvsLevel {
     return _file.readBytes(offset, byteCount);
   }
 
-  /// The spliced, standalone-decodable JPEG bytes for tile ([tx], [ty]).
-  /// Empty for a sparse tile — callers should treat that as blank rather
-  /// than attempt to decode it. Only valid when [isJpeg]; use
-  /// [readTileRgba] for [isJp2k] instead.
+  /// The spliced, standalone-decodable JPEG bytes for tile ([tx], [ty]) —
+  /// with an Adobe `transform=0` marker inserted first (see
+  /// [forceRgbColorTransform]) when [needsYCbCrFix]. Empty for a sparse
+  /// tile — callers should treat that as blank rather than attempt to
+  /// decode it. Only valid when [isJpeg]; use [readTileRgba] for [isJp2k]
+  /// instead.
   Future<Uint8List> readTileJpegBytes(int tx, int ty) async {
     final rawTile = await _readRawTileBytes(tx, ty);
     if (rawTile.isEmpty) return rawTile;
     final tables = await _loadJpegTables();
-    return spliceJpegTile(tables, rawTile);
+    final spliced = spliceJpegTile(tables, rawTile);
+    return needsYCbCrFix ? forceRgbColorTransform(spliced) : spliced;
   }
 
   /// The decoded RGBA8888 bytes for tile ([tx], [ty]), tightly packed —
