@@ -200,6 +200,128 @@ Future<File> exportSvsRegionAsSvsToFile(
   return file;
 }
 
+/// Crops [level]'s (`x`,`y`)-`width`x`height` rectangle — same coordinate
+/// semantics as [exportSvsRegionAsSvs] — into a new pyramidal `.svs` file
+/// whose pyramid levels are cropped **directly from the source's own
+/// pyramid levels** (`level`, `level + 1`, ... up to the source's coarsest
+/// level), rather than [exportSvsRegionAsSvs]'s approach of decoding just
+/// [level] and re-deriving every coarser level by halving it down 2x at a
+/// time.
+///
+/// The difference only shows up when the source's own pyramid doesn't step
+/// by a clean 2x between levels (real Aperio files often don't — e.g. a
+/// downsample sequence of 1x, 4x, 16x): [exportSvsRegionAsSvs] always
+/// produces a 2x-stepped pyramid regardless of the source's actual
+/// structure, while this function reproduces the source's real level count
+/// and downsample steps exactly (scaled down to the crop's own extent),
+/// since every output level comes from actually cropping the matching
+/// source level rather than synthesizing one. The tradeoff: an output level
+/// can end up any size (not necessarily `<=` half the previous one, and not
+/// necessarily fitting neatly into `tileSize`-aligned tiles at its edges),
+/// exactly mirroring how ungainly (or clean) the source's own pyramid is.
+///
+/// [compression]/[quality]/[jp2kCompressionRatio]/[matchSourceCompression]/
+/// [tileSize] all mean the same thing as on [exportSvsRegionAsSvs] — applied
+/// uniformly across every generated level, resolved once from [level] itself
+/// (not re-resolved per coarser level, since real slides almost always use
+/// one compression scheme/quality for their whole pyramid). Likewise
+/// [adjustments], [includeLabelAndMacroImages], [includeSourceMetadata],
+/// [maxPixels] (checked against [level]'s own `width x height` only, since
+/// every coarser level is smaller by construction), and [onProgress].
+///
+/// Must run on the main isolate, like [readSvsRegion].
+Future<Uint8List> exportSvsRegionAsSvsPreservingLevels(
+  SvsFile svsFile, {
+  required int level,
+  required int x,
+  required int y,
+  required int width,
+  required int height,
+  int? tileSize,
+  int quality = 90,
+  SvsExportCompression compression = SvsExportCompression.jpeg,
+  double jp2kCompressionRatio = 0,
+  bool matchSourceCompression = false,
+  int? maxPixels,
+  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  bool includeLabelAndMacroImages = true,
+  bool includeSourceMetadata = true,
+  void Function(double progress)? onProgress,
+}) async {
+  final tempDir = await Directory.systemTemp.createTemp('svs_region_export_');
+  final tempFile = File('${tempDir.path}/region.svs');
+  try {
+    await _streamSvsRegionAsSvsPreservingLevels(
+      svsFile,
+      outFile: tempFile,
+      level: level,
+      x: x,
+      y: y,
+      width: width,
+      height: height,
+      tileSize: tileSize,
+      quality: quality,
+      compression: compression,
+      jp2kCompressionRatio: jp2kCompressionRatio,
+      matchSourceCompression: matchSourceCompression,
+      maxPixels: maxPixels,
+      adjustments: adjustments,
+      includeLabelAndMacroImages: includeLabelAndMacroImages,
+      includeSourceMetadata: includeSourceMetadata,
+      onProgress: onProgress,
+    );
+    return await tempFile.readAsBytes();
+  } finally {
+    await tempDir.delete(recursive: true);
+  }
+}
+
+/// Same as [exportSvsRegionAsSvsPreservingLevels], but streams the encoded
+/// file straight to [path] instead of returning it — the memory-bounded way
+/// to export a crop that's too large to comfortably hold as a single
+/// in-memory [Uint8List].
+Future<File> exportSvsRegionAsSvsPreservingLevelsToFile(
+  SvsFile svsFile, {
+  required String path,
+  required int level,
+  required int x,
+  required int y,
+  required int width,
+  required int height,
+  int? tileSize,
+  int quality = 90,
+  SvsExportCompression compression = SvsExportCompression.jpeg,
+  double jp2kCompressionRatio = 0,
+  bool matchSourceCompression = false,
+  int? maxPixels,
+  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  bool includeLabelAndMacroImages = true,
+  bool includeSourceMetadata = true,
+  void Function(double progress)? onProgress,
+}) async {
+  final file = File(path);
+  await _streamSvsRegionAsSvsPreservingLevels(
+    svsFile,
+    outFile: file,
+    level: level,
+    x: x,
+    y: y,
+    width: width,
+    height: height,
+    tileSize: tileSize,
+    quality: quality,
+    compression: compression,
+    jp2kCompressionRatio: jp2kCompressionRatio,
+    matchSourceCompression: matchSourceCompression,
+    maxPixels: maxPixels,
+    adjustments: adjustments,
+    includeLabelAndMacroImages: includeLabelAndMacroImages,
+    includeSourceMetadata: includeSourceMetadata,
+    onProgress: onProgress,
+  );
+  return file;
+}
+
 Future<void> _streamSvsRegionAsSvs(
   SvsFile svsFile, {
   required File outFile,
@@ -239,10 +361,11 @@ Future<void> _streamSvsRegionAsSvs(
   }
 
   final sourceLevel = svsFile.levels[level];
-  // `null` means "auto": this function's own usual default (256), unless
-  // matchSourceCompression is also matching the source's own tile grid.
-  final effectiveTileSize =
-      tileSize ?? (matchSourceCompression ? sourceLevel.tileWidth : 256);
+  final effectiveTileSize = _resolveTileSize(
+    tileSize,
+    matchSourceCompression: matchSourceCompression,
+    sourceLevel: sourceLevel,
+  );
   if (effectiveTileSize <= 0) {
     throw ArgumentError.value(tileSize, 'tileSize', 'must be positive');
   }
@@ -250,32 +373,18 @@ Future<void> _streamSvsRegionAsSvs(
   final mpp = sourceMppX == null ? null : sourceMppX * sourceLevel.downsample;
   final appMag = svsFile.metadata.appMag;
 
-  if (matchSourceCompression) {
-    if (sourceLevel.isJp2k) {
-      compression = SvsExportCompression.jpeg2000;
-      jp2kCompressionRatio =
-          await _estimateSourceJp2kRatio(sourceLevel) ?? jp2kCompressionRatio;
-    } else {
-      compression = SvsExportCompression.jpeg;
-      quality = await _parseSourceJpegQuality(sourceLevel) ?? quality;
-    }
-  }
+  (compression, quality, jp2kCompressionRatio) = await _resolveExportEncoding(
+    sourceLevel: sourceLevel,
+    compression: compression,
+    quality: quality,
+    jp2kCompressionRatio: jp2kCompressionRatio,
+    matchSourceCompression: matchSourceCompression,
+  );
 
-  // The source file's own label/macro associated images don't change with
-  // the crop — they describe the whole physical slide — so, unless the
-  // caller opted out via `includeLabelAndMacroImages`, they're carried into
-  // the exported file unmodified (raw strip bytes copied as-is, no decode/
-  // re-encode) rather than dropped, same as a real Aperio file would have
-  // them.
-  final labelAndMacroImages = includeLabelAndMacroImages
-      ? svsFile.associatedImages
-            .where(
-              (a) =>
-                  a.kind == AssociatedImageKind.label ||
-                  a.kind == AssociatedImageKind.macro,
-            )
-            .toList(growable: false)
-      : const <SvsAssociatedImage>[];
+  final labelAndMacroImages = _sourceLabelAndMacroImages(
+    svsFile,
+    includeLabelAndMacroImages,
+  );
 
   final tileCompression = compression == SvsExportCompression.jpeg2000
       ? ApCompression.jp2k
@@ -381,73 +490,448 @@ Future<void> _streamSvsRegionAsSvs(
     // for the coarsest level, covering its whole (already <= tileSize)
     // extent in one band, so this is the complete thumbnail image.
     final thumbnailImage = builders.last.finalImage!;
-    var writePos = await raf.position();
 
-    final thumbBytes = img.encodeJpg(thumbnailImage, quality: quality);
-    final thumbOffset = writePos;
-    await raf.setPosition(writePos);
-    await raf.writeFrom(thumbBytes);
-    writePos += thumbBytes.length;
-    if (writePos.isOdd) {
-      await raf.writeFrom(Uint8List(1));
-      writePos += 1;
-    }
-
-    // Each label/macro image's strips are copied byte-for-byte (no decode,
-    // no re-encode) straight from the source file.
-    final extraStripData = <(List<int>, List<int>)>[];
-    for (final source in labelAndMacroImages) {
-      final stripCount = await source.stripCount;
-      final offsets = <int>[];
-      final byteCounts = <int>[];
-      for (var i = 0; i < stripCount; i++) {
-        final bytes = await source.readRawStripBytes(i);
-        if (bytes.isEmpty) {
-          offsets.add(0);
-          byteCounts.add(0);
-          continue;
-        }
-        offsets.add(writePos);
-        byteCounts.add(bytes.length);
-        await raf.setPosition(writePos);
-        await raf.writeFrom(bytes);
-        writePos += bytes.length;
-        if (writePos.isOdd) {
-          await raf.writeFrom(Uint8List(1));
-          writePos += 1;
-        }
-      }
-      extraStripData.add((offsets, byteCounts));
-    }
-
-    for (var i = 0; i < specs.length; i++) {
-      final patch = layout.levels[i];
-      await raf.setPosition(patch.tileOffsetsValuePos);
-      await raf.writeFrom(
-        encodeTiffInts(sink.offsetsPerLevel[i], TiffType.long8),
-      );
-      await raf.setPosition(patch.tileByteCountsValuePos);
-      await raf.writeFrom(
-        encodeTiffInts(sink.byteCountsPerLevel[i], TiffType.long),
-      );
-    }
-
-    final thumbPatch = layout.associatedImages[0];
-    await raf.setPosition(thumbPatch.stripOffsetsValuePos);
-    await raf.writeFrom(encodeTiffInts([thumbOffset], TiffType.long8));
-    await raf.setPosition(thumbPatch.stripByteCountsValuePos);
-    await raf.writeFrom(encodeTiffInts([thumbBytes.length], TiffType.long));
-
-    for (var i = 0; i < labelAndMacroImages.length; i++) {
-      final patch = layout.associatedImages[1 + i];
-      final (offsets, byteCounts) = extraStripData[i];
-      await raf.setPosition(patch.stripOffsetsValuePos);
-      await raf.writeFrom(encodeTiffInts(offsets, TiffType.long8));
-      await raf.setPosition(patch.stripByteCountsValuePos);
-      await raf.writeFrom(encodeTiffInts(byteCounts, TiffType.long));
-    }
+    await _writeSvsTail(
+      raf: raf,
+      layout: layout,
+      sink: sink,
+      levelCount: specs.length,
+      thumbnailImage: thumbnailImage,
+      quality: quality,
+      labelAndMacroImages: labelAndMacroImages,
+    );
   } finally {
     await raf.close();
+  }
+}
+
+/// One output level's source: [width]x[height] pixels to crop from
+/// [svsFile.levels][sourceIndex] at that level's own (`x`,`y`) — see
+/// [_regionOnSourceLevel].
+typedef _SourceLevelRegion = ({
+  int sourceIndex,
+  int x,
+  int y,
+  int width,
+  int height,
+});
+
+/// [sourceLevel]'s own pixel-space rectangle covering the same physical area
+/// as the level-0-space rectangle
+/// (`level0X`,`level0Y`)-`level0Width`x`level0Height` — that rectangle
+/// scaled down by [sourceLevel]'s own `downsample`, then clamped to
+/// [sourceLevel]'s actual bounds (rounding, or the source's real dimensions
+/// not perfectly matching its nominal downsample, could otherwise push it
+/// out of range).
+_SourceLevelRegion _regionOnSourceLevel(
+  SvsLevel sourceLevel, {
+  required double level0X,
+  required double level0Y,
+  required double level0Width,
+  required double level0Height,
+}) {
+  final ds = sourceLevel.downsample;
+  var rx = (level0X / ds).round();
+  var ry = (level0Y / ds).round();
+  var rw = (level0Width / ds).round();
+  var rh = (level0Height / ds).round();
+
+  rx = math.max(0, math.min(rx, sourceLevel.width - 1));
+  ry = math.max(0, math.min(ry, sourceLevel.height - 1));
+  rw = math.max(1, math.min(rw, sourceLevel.width - rx));
+  rh = math.max(1, math.min(rh, sourceLevel.height - ry));
+
+  return (sourceIndex: sourceLevel.index, x: rx, y: ry, width: rw, height: rh);
+}
+
+/// [width]x[height] scaled down (aspect-preserved) so neither dimension
+/// exceeds [maxDim] — unchanged if it already doesn't. Used to size the
+/// thumbnail derived from the coarsest region in
+/// [_streamSvsRegionAsSvsPreservingLevels], since (unlike
+/// [_streamSvsRegionAsSvs]'s halving-generated pyramid) that region isn't
+/// guaranteed to already fit in one tile.
+(int, int) _fitWithinSquare(int width, int height, int maxDim) {
+  if (width <= maxDim && height <= maxDim) return (width, height);
+  final scale = maxDim / math.max(width, height);
+  return (
+    math.max(1, (width * scale).round()),
+    math.max(1, (height * scale).round()),
+  );
+}
+
+/// Same as [_streamSvsRegionAsSvs], but building
+/// [exportSvsRegionAsSvsPreservingLevels]'s pyramid instead: one output
+/// level per source level from [level] to the source's coarsest, each
+/// cropped directly from that source level rather than downsampled from
+/// [level]'s own decoded pixels.
+Future<void> _streamSvsRegionAsSvsPreservingLevels(
+  SvsFile svsFile, {
+  required File outFile,
+  required int level,
+  required int x,
+  required int y,
+  required int width,
+  required int height,
+  required int? tileSize,
+  required int quality,
+  required SvsExportCompression compression,
+  required double jp2kCompressionRatio,
+  required bool matchSourceCompression,
+  required int? maxPixels,
+  required SvsImageAdjustments adjustments,
+  required bool includeLabelAndMacroImages,
+  required bool includeSourceMetadata,
+  required void Function(double progress)? onProgress,
+}) async {
+  if (level < 0 || level >= svsFile.levels.length) {
+    throw SvsFormatException(
+      'Level $level out of range (have ${svsFile.levels.length} levels)',
+    );
+  }
+  if (width <= 0 || height <= 0) {
+    throw ArgumentError('width/height must be positive, got ${width}x$height');
+  }
+  final pixelCount = width * height;
+  if (maxPixels != null && pixelCount > maxPixels) {
+    final estimatedMb = (pixelCount * 4 / (1024 * 1024)).round();
+    throw ArgumentError(
+      'Requested region is ${width}x$height ($pixelCount px), over the '
+      '$maxPixels px safety limit (~$estimatedMb MB just for the raw pixel '
+      'buffer). Crop a smaller rectangle, or pass a higher maxPixels if you '
+      'really mean it.',
+    );
+  }
+
+  final sourceLevel = svsFile.levels[level];
+  final effectiveTileSize = _resolveTileSize(
+    tileSize,
+    matchSourceCompression: matchSourceCompression,
+    sourceLevel: sourceLevel,
+  );
+  if (effectiveTileSize <= 0) {
+    throw ArgumentError.value(tileSize, 'tileSize', 'must be positive');
+  }
+  final sourceMppX = svsFile.metadata.mppX;
+  final mpp = sourceMppX == null ? null : sourceMppX * sourceLevel.downsample;
+  final appMag = svsFile.metadata.appMag;
+
+  (compression, quality, jp2kCompressionRatio) = await _resolveExportEncoding(
+    sourceLevel: sourceLevel,
+    compression: compression,
+    quality: quality,
+    jp2kCompressionRatio: jp2kCompressionRatio,
+    matchSourceCompression: matchSourceCompression,
+  );
+
+  final labelAndMacroImages = _sourceLabelAndMacroImages(
+    svsFile,
+    includeLabelAndMacroImages,
+  );
+
+  final tileCompression = compression == SvsExportCompression.jpeg2000
+      ? ApCompression.jp2k
+      : ApCompression.newJpeg;
+
+  // The requested rectangle, in level-0 pixel space — every other source
+  // level's own matching rectangle is this same physical area scaled by
+  // that level's `downsample`, so every generated output level covers
+  // exactly the same region of the slide, just at that level's resolution.
+  final level0X = x * sourceLevel.downsample;
+  final level0Y = y * sourceLevel.downsample;
+  final level0Width = width * sourceLevel.downsample;
+  final level0Height = height * sourceLevel.downsample;
+
+  final regions = <_SourceLevelRegion>[
+    for (var j = level; j < svsFile.levels.length; j++)
+      _regionOnSourceLevel(
+        svsFile.levels[j],
+        level0X: level0X,
+        level0Y: level0Y,
+        level0Width: level0Width,
+        level0Height: level0Height,
+      ),
+  ];
+
+  final specs = [
+    for (var k = 0; k < regions.length; k++)
+      PyramidLevelSpec(
+        width: regions[k].width,
+        height: regions[k].height,
+        tileWidth: effectiveTileSize,
+        tileLength: effectiveTileSize,
+        compression: tileCompression,
+        imageDescription: k == 0
+            ? _buildImageDescription(
+                width: regions[0].width,
+                height: regions[0].height,
+                tileSize: effectiveTileSize,
+                quality: quality,
+                compression: compression,
+                mpp: mpp,
+                appMag: appMag,
+                sourceFields: includeSourceMetadata
+                    ? svsFile.metadata.raw
+                    : const {},
+              )
+            : null,
+      ),
+  ];
+
+  final coarsestRegion = regions.last;
+  final (thumbWidth, thumbHeight) = _fitWithinSquare(
+    coarsestRegion.width,
+    coarsestRegion.height,
+    effectiveTileSize,
+  );
+  final thumbSpec = AssociatedImageSpec(
+    width: thumbWidth,
+    height: thumbHeight,
+    compression: ApCompression.newJpeg,
+    photometricInterpretation: 6, // YCbCr — img.encodeJpg's normal output
+    samplesPerPixel: 3,
+    bitsPerSample: const [8, 8, 8],
+    predictor: 1,
+    rowsPerStrip: thumbHeight,
+    stripCount: 1,
+  );
+  final extraSpecs = [
+    for (final image in labelAndMacroImages) await _copySpec(image),
+  ];
+  final layout = planPyramidHeader(
+    specs,
+    associatedImages: [thumbSpec, ...extraSpecs],
+  );
+
+  if (await outFile.exists()) await outFile.delete();
+  final raf = await outFile.open(mode: FileMode.write);
+  try {
+    await raf.writeFrom(layout.headerBytes);
+
+    final sink = _TileSink(raf, specs.length);
+    final totalRows = regions.fold<int>(0, (sum, r) => sum + r.height);
+    var rowsProcessedGlobal = 0;
+
+    // Accumulates the coarsest level's own decoded bytes as they stream by,
+    // so the thumbnail can be built from them afterwards without decoding
+    // that (smallest, of every included level) region a second time.
+    BytesBuilder? coarsestRawBuilder;
+
+    for (var k = 0; k < regions.length; k++) {
+      final region = regions[k];
+      final isCoarsest = k == regions.length - 1;
+      if (isCoarsest) coarsestRawBuilder = BytesBuilder(copy: false);
+
+      final builder = _LevelBuilder(
+        levelIndex: k,
+        spec: specs[k],
+        quality: quality,
+        jp2kCompressionRatio: jp2kCompressionRatio,
+        sink: sink,
+      );
+
+      var srcY = 0;
+      while (srcY < region.height) {
+        final bandHeight = math.min(effectiveTileSize, region.height - srcY);
+        final raw = await readSvsRegionRawRgba(
+          svsFile,
+          level: region.sourceIndex,
+          x: region.x,
+          y: region.y + srcY,
+          width: region.width,
+          height: bandHeight,
+        );
+        adjustments.applyToRgba(raw);
+        if (isCoarsest) coarsestRawBuilder!.add(raw);
+        await builder.addRows([
+          for (var r = 0; r < bandHeight; r++)
+            Uint8List.sublistView(
+              raw,
+              r * region.width * 4,
+              (r + 1) * region.width * 4,
+            ),
+        ]);
+
+        rowsProcessedGlobal += bandHeight;
+        srcY += bandHeight;
+        onProgress?.call(rowsProcessedGlobal / totalRows);
+        // Yield between bands so the UI (this all runs on the main isolate —
+        // tile decoding needs `dart:ui`) can still service a frame.
+        await Future(() {});
+      }
+      await builder.finish();
+    }
+
+    var thumbnailImage = img.Image.fromBytes(
+      width: coarsestRegion.width,
+      height: coarsestRegion.height,
+      bytes: coarsestRawBuilder!.takeBytes().buffer,
+      numChannels: 4,
+      order: img.ChannelOrder.rgba,
+    );
+    if (thumbnailImage.width != thumbWidth ||
+        thumbnailImage.height != thumbHeight) {
+      thumbnailImage = img.copyResize(
+        thumbnailImage,
+        width: thumbWidth,
+        height: thumbHeight,
+        interpolation: img.Interpolation.average,
+      );
+    }
+
+    await _writeSvsTail(
+      raf: raf,
+      layout: layout,
+      sink: sink,
+      levelCount: specs.length,
+      thumbnailImage: thumbnailImage,
+      quality: quality,
+      labelAndMacroImages: labelAndMacroImages,
+    );
+  } finally {
+    await raf.close();
+  }
+}
+
+/// `tileSize`'s resolved value: the caller's explicit choice if given, else
+/// this function family's usual 256 default — or, under
+/// [matchSourceCompression], [sourceLevel]'s own tile edge length instead.
+int _resolveTileSize(
+  int? tileSize, {
+  required bool matchSourceCompression,
+  required SvsLevel sourceLevel,
+}) => tileSize ?? (matchSourceCompression ? sourceLevel.tileWidth : 256);
+
+/// `compression`/`quality`/`jp2kCompressionRatio`'s resolved values: the
+/// caller's explicit choices if [matchSourceCompression] is `false`, else
+/// [sourceLevel]'s own compression scheme plus its own JPEG quality (parsed
+/// from its `ImageDescription`) or an estimated JPEG2000 ratio (sampled from
+/// its actual tile sizes) — falling back to the caller's choices when either
+/// can't be determined. See [matchSourceCompression]'s own doc for why.
+Future<(SvsExportCompression, int, double)> _resolveExportEncoding({
+  required SvsLevel sourceLevel,
+  required SvsExportCompression compression,
+  required int quality,
+  required double jp2kCompressionRatio,
+  required bool matchSourceCompression,
+}) async {
+  if (!matchSourceCompression) {
+    return (compression, quality, jp2kCompressionRatio);
+  }
+  if (sourceLevel.isJp2k) {
+    final ratio = await _estimateSourceJp2kRatio(sourceLevel);
+    return (
+      SvsExportCompression.jpeg2000,
+      quality,
+      ratio ?? jp2kCompressionRatio,
+    );
+  }
+  final sourceQuality = await _parseSourceJpegQuality(sourceLevel);
+  return (
+    SvsExportCompression.jpeg,
+    sourceQuality ?? quality,
+    jp2kCompressionRatio,
+  );
+}
+
+/// The source file's own label/macro associated images — carried into an
+/// export unmodified (see [_copySpec]) unless the caller opts out via
+/// [include], since they describe the whole physical slide rather than any
+/// particular crop of it.
+List<SvsAssociatedImage> _sourceLabelAndMacroImages(
+  SvsFile svsFile,
+  bool include,
+) {
+  if (!include) return const <SvsAssociatedImage>[];
+  return svsFile.associatedImages
+      .where(
+        (a) =>
+            a.kind == AssociatedImageKind.label ||
+            a.kind == AssociatedImageKind.macro,
+      )
+      .toList(growable: false);
+}
+
+/// Writes everything that comes after a pyramid export's tile data —
+/// [thumbnailImage] (encoded fresh at [quality]), [labelAndMacroImages]'
+/// strips (copied byte-for-byte from the source), then patches every
+/// level's `TileOffsets`/`TileByteCounts` (from [sink]) and every associated
+/// image's `StripOffsets`/`StripByteCounts` into the placeholders
+/// [layout] reserved for them. Shared by every pyramid-export entry point in
+/// this file — the bookkeeping is identical regardless of how the pyramid's
+/// own tiles were produced.
+Future<void> _writeSvsTail({
+  required RandomAccessFile raf,
+  required PyramidHeaderLayout layout,
+  required _TileSink sink,
+  required int levelCount,
+  required img.Image thumbnailImage,
+  required int quality,
+  required List<SvsAssociatedImage> labelAndMacroImages,
+}) async {
+  var writePos = await raf.position();
+
+  final thumbBytes = img.encodeJpg(thumbnailImage, quality: quality);
+  final thumbOffset = writePos;
+  await raf.setPosition(writePos);
+  await raf.writeFrom(thumbBytes);
+  writePos += thumbBytes.length;
+  if (writePos.isOdd) {
+    await raf.writeFrom(Uint8List(1));
+    writePos += 1;
+  }
+
+  // Each label/macro image's strips are copied byte-for-byte (no decode, no
+  // re-encode) straight from the source file.
+  final extraStripData = <(List<int>, List<int>)>[];
+  for (final source in labelAndMacroImages) {
+    final stripCount = await source.stripCount;
+    final offsets = <int>[];
+    final byteCounts = <int>[];
+    for (var i = 0; i < stripCount; i++) {
+      final bytes = await source.readRawStripBytes(i);
+      if (bytes.isEmpty) {
+        offsets.add(0);
+        byteCounts.add(0);
+        continue;
+      }
+      offsets.add(writePos);
+      byteCounts.add(bytes.length);
+      await raf.setPosition(writePos);
+      await raf.writeFrom(bytes);
+      writePos += bytes.length;
+      if (writePos.isOdd) {
+        await raf.writeFrom(Uint8List(1));
+        writePos += 1;
+      }
+    }
+    extraStripData.add((offsets, byteCounts));
+  }
+
+  for (var i = 0; i < levelCount; i++) {
+    final patch = layout.levels[i];
+    await raf.setPosition(patch.tileOffsetsValuePos);
+    await raf.writeFrom(
+      encodeTiffInts(sink.offsetsPerLevel[i], TiffType.long8),
+    );
+    await raf.setPosition(patch.tileByteCountsValuePos);
+    await raf.writeFrom(
+      encodeTiffInts(sink.byteCountsPerLevel[i], TiffType.long),
+    );
+  }
+
+  final thumbPatch = layout.associatedImages[0];
+  await raf.setPosition(thumbPatch.stripOffsetsValuePos);
+  await raf.writeFrom(encodeTiffInts([thumbOffset], TiffType.long8));
+  await raf.setPosition(thumbPatch.stripByteCountsValuePos);
+  await raf.writeFrom(encodeTiffInts([thumbBytes.length], TiffType.long));
+
+  for (var i = 0; i < labelAndMacroImages.length; i++) {
+    final patch = layout.associatedImages[1 + i];
+    final (offsets, byteCounts) = extraStripData[i];
+    await raf.setPosition(patch.stripOffsetsValuePos);
+    await raf.writeFrom(encodeTiffInts(offsets, TiffType.long8));
+    await raf.setPosition(patch.stripByteCountsValuePos);
+    await raf.writeFrom(encodeTiffInts(byteCounts, TiffType.long));
   }
 }
 

@@ -7,6 +7,35 @@
   pyramid's tiles as JPEG2000 instead of JPEG — mathematically lossless by
   default, or lossy at a chosen `jp2kCompressionRatio`, typically a
   meaningfully smaller file than JPEG at comparable visual quality.
+* `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsToFile` gain a
+  `matchSourceCompression` parameter (default `false`): when `true`, the
+  crop's compression/quality is derived from the source level being cropped
+  instead of this function's own fixed defaults (JPEG quality 90, or
+  mathematically lossless JPEG2000) — the same compression scheme the
+  source already uses, plus either the source's own JPEG quality (parsed
+  from its `ImageDescription`, e.g. `Q=70`) or an equivalent JPEG2000 ratio
+  (estimated by sampling the source's actual on-disk tile sizes, since
+  Aperio doesn't record that ratio). Without it, a small crop re-encoded at
+  this function's own defaults could end up *larger* than the corresponding
+  region of the source file, if the source itself was actually encoded
+  leaner (real slides are commonly scanned at `Q=70`-`80`, not `Q=90`, or a
+  lossy JP2K ratio, not lossless). `tileSize` is now optional (`int?`,
+  previously a non-nullable `256` default): left unset, it still resolves to
+  256 as before — unless `matchSourceCompression` is also `true`, in which
+  case it resolves to the source level's own tile edge length instead, so a
+  source scanned on a non-256 tile grid keeps that grid in the crop too.
+* `exportSvsRegionAsSvsPreservingLevels`/
+  `exportSvsRegionAsSvsPreservingLevelsToFile`: crops the same way as
+  `exportSvsRegionAsSvs`, but builds each output pyramid level by cropping
+  directly from the matching source level (`level`, `level + 1`, ... up to
+  the source's coarsest) instead of decoding just `level` and re-deriving
+  every coarser level by halving it down 2x at a time. Real Aperio pyramids
+  often don't step by a clean 2x between levels (e.g. a downsample sequence
+  of 1x, 4x, 16x); `exportSvsRegionAsSvs` always produces a 2x-stepped
+  pyramid regardless, while this new function reproduces the source's real
+  level count and downsample steps exactly (scaled to the crop's own
+  extent). Accepts every parameter `exportSvsRegionAsSvs` does, including
+  `matchSourceCompression`.
 
 ## 1.0.3
 

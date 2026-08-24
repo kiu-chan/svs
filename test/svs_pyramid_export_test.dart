@@ -210,6 +210,71 @@ Future<File> _writeSingleTileJp2kFixture(
   return file;
 }
 
+/// Builds a multi-level JPEG-compressed source `.svs` fixture — one
+/// single-tile IFD per entry in [levelSizes]/[levelColors] (finest level
+/// first, same order a real Aperio pyramid stores them in), each solid
+/// filled with its own distinct color. Needed by
+/// `exportSvsRegionAsSvsPreservingLevels`'s tests: giving each level a
+/// different (not a downsampled version of the previous level's) color
+/// makes it possible to tell "cropped directly from that source level"
+/// apart from "downsampled from a finer level's pixels" just by checking
+/// which color came out.
+Future<File> _buildMultiLevelJpegFixture(
+  Directory dir,
+  String name, {
+  required List<int> levelSizes,
+  required List<(int, int, int)> levelColors,
+  String? level0ImageDescription,
+}) async {
+  final tileJpegs = <Uint8List>[];
+  for (var i = 0; i < levelSizes.length; i++) {
+    final tile = img.Image(width: levelSizes[i], height: levelSizes[i]);
+    final color = levelColors[i];
+    img.fill(tile, color: img.ColorRgb8(color.$1, color.$2, color.$3));
+    tileJpegs.add(img.encodeJpg(tile, quality: 95));
+  }
+
+  List<List<TestTag>> ifds(List<int> tileOffsets) => [
+    for (var i = 0; i < levelSizes.length; i++)
+      [
+        TestTag.ints(256, TiffType.long, [levelSizes[i]], Endian.little),
+        TestTag.ints(257, TiffType.long, [levelSizes[i]], Endian.little),
+        TestTag.ints(259, TiffType.short, [7], Endian.little), // new JPEG
+        if (i == 0 && level0ImageDescription != null)
+          TestTag.ascii(270, level0ImageDescription),
+        TestTag.ints(322, TiffType.long, [levelSizes[i]], Endian.little),
+        TestTag.ints(323, TiffType.long, [levelSizes[i]], Endian.little),
+        TestTag.ints(324, TiffType.long, [tileOffsets[i]], Endian.little),
+        TestTag.ints(325, TiffType.long, [tileJpegs[i].length], Endian.little),
+      ],
+  ];
+
+  final placeholderOffsets = List.filled(levelSizes.length, 0);
+  final headerOnly = buildTiff(
+    bigTiff: false,
+    order: Endian.little,
+    ifds: ifds(placeholderOffsets),
+  );
+  final realOffsets = <int>[];
+  var pos = headerOnly.length;
+  for (final tileJpeg in tileJpegs) {
+    realOffsets.add(pos);
+    pos += tileJpeg.length;
+  }
+  final header = buildTiff(
+    bigTiff: false,
+    order: Endian.little,
+    ifds: ifds(realOffsets),
+  );
+  // Every TileOffsets value is a single inline LONG, so none of the real
+  // (now-known) offsets can have changed the header's own byte length.
+  expect(header.length, headerOnly.length);
+
+  final file = File('${dir.path}/$name');
+  await file.writeAsBytes([...header, for (final t in tileJpegs) ...t]);
+  return file;
+}
+
 void main() {
   late Directory tempDir;
 
@@ -420,44 +485,41 @@ void main() {
   );
 
   group('matchSourceCompression', () {
-    test(
-      'parses the source JPEG quality out of its ImageDescription instead '
-      'of using the quality parameter',
-      () async {
-        final file = await _buildSingleTileJpegFixture(
-          tempDir,
-          'src.svs',
-          size: 64,
-          color: (200, 100, 50),
-          imageDescription:
-              'Aperio Image Library v11.2.1\r\n'
-              '64x64 [0,0 64x64] (64x64) JPEG/RGB Q=37|AppMag = 20',
-        );
-        final svs = await SvsFile.open(file.path);
-        addTearDown(svs.close);
+    test('parses the source JPEG quality out of its ImageDescription instead '
+        'of using the quality parameter', () async {
+      final file = await _buildSingleTileJpegFixture(
+        tempDir,
+        'src.svs',
+        size: 64,
+        color: (200, 100, 50),
+        imageDescription:
+            'Aperio Image Library v11.2.1\r\n'
+            '64x64 [0,0 64x64] (64x64) JPEG/RGB Q=37|AppMag = 20',
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
 
-        final outBytes = await exportSvsRegionAsSvs(
-          svs,
-          level: 0,
-          x: 0,
-          y: 0,
-          width: 64,
-          height: 64,
-          tileSize: 256,
-          quality: 90, // ignored: matchSourceCompression wins
-          matchSourceCompression: true,
-        );
+      final outBytes = await exportSvsRegionAsSvs(
+        svs,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+        tileSize: 256,
+        quality: 90, // ignored: matchSourceCompression wins
+        matchSourceCompression: true,
+      );
 
-        final outFile = File('${tempDir.path}/out.svs');
-        await outFile.writeAsBytes(outBytes);
-        final roundTripped = await SvsFile.open(outFile.path);
-        addTearDown(roundTripped.close);
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
 
-        expect(roundTripped.levels.single.isJpeg, isTrue);
-        final description = await roundTripped.levels.single.imageDescription;
-        expect(description, contains('Q=37'));
-      },
-    );
+      expect(roundTripped.levels.single.isJpeg, isTrue);
+      final description = await roundTripped.levels.single.imageDescription;
+      expect(description, contains('Q=37'));
+    });
 
     test(
       'falls back to the quality parameter when the source has no Q= to match',
@@ -494,41 +556,38 @@ void main() {
       },
     );
 
-    test(
-      'switches to JPEG2000 to match a JP2K source, even though the '
-      'compression parameter still says JPEG',
-      () async {
-        final file = await _buildSingleTileJp2kFixture(
-          tempDir,
-          'src.svs',
-          size: 64,
-          color: (10, 150, 220),
-          compressionRatio: 20,
-        );
-        final svs = await SvsFile.open(file.path);
-        addTearDown(svs.close);
+    test('switches to JPEG2000 to match a JP2K source, even though the '
+        'compression parameter still says JPEG', () async {
+      final file = await _buildSingleTileJp2kFixture(
+        tempDir,
+        'src.svs',
+        size: 64,
+        color: (10, 150, 220),
+        compressionRatio: 20,
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
 
-        final outBytes = await exportSvsRegionAsSvs(
-          svs,
-          level: 0,
-          x: 0,
-          y: 0,
-          width: 64,
-          height: 64,
-          tileSize: 256,
-          compression: SvsExportCompression.jpeg, // ignored
-          matchSourceCompression: true,
-        );
+      final outBytes = await exportSvsRegionAsSvs(
+        svs,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+        tileSize: 256,
+        compression: SvsExportCompression.jpeg, // ignored
+        matchSourceCompression: true,
+      );
 
-        final outFile = File('${tempDir.path}/out.svs');
-        await outFile.writeAsBytes(outBytes);
-        final roundTripped = await SvsFile.open(outFile.path);
-        addTearDown(roundTripped.close);
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
 
-        expect(roundTripped.levels.single.isJp2k, isTrue);
-        expect(roundTripped.levels.single.isJpeg, isFalse);
-      },
-    );
+      expect(roundTripped.levels.single.isJp2k, isTrue);
+      expect(roundTripped.levels.single.isJpeg, isFalse);
+    });
 
     test(
       'estimates a lossy JP2K ratio from the source\'s own tile size instead '
@@ -661,62 +720,59 @@ void main() {
     );
   });
 
-  test(
-    'JP2K export with a non-tile-aligned crop pads boundary tiles instead '
-    'of corrupting them',
-    () async {
-      // 300x300 with tileSize 128 -> boundary tiles in both x/y (2 full
-      // 128-col tiles + a 44-col remainder; same for rows), the case that
-      // needs the nominal-size padding — every reader in this package
-      // assumes a JP2K tile always decodes at the full nominal tile size.
-      final file = await _buildSingleTileJpegFixture(
-        tempDir,
-        'src.svs',
-        size: 300,
-        color: (10, 150, 220),
-      );
-      final svs = await SvsFile.open(file.path);
-      addTearDown(svs.close);
+  test('JP2K export with a non-tile-aligned crop pads boundary tiles instead '
+      'of corrupting them', () async {
+    // 300x300 with tileSize 128 -> boundary tiles in both x/y (2 full
+    // 128-col tiles + a 44-col remainder; same for rows), the case that
+    // needs the nominal-size padding — every reader in this package
+    // assumes a JP2K tile always decodes at the full nominal tile size.
+    final file = await _buildSingleTileJpegFixture(
+      tempDir,
+      'src.svs',
+      size: 300,
+      color: (10, 150, 220),
+    );
+    final svs = await SvsFile.open(file.path);
+    addTearDown(svs.close);
 
-      final outBytes = await exportSvsRegionAsSvs(
-        svs,
-        level: 0,
-        x: 0,
-        y: 0,
-        width: 300,
-        height: 300,
-        tileSize: 128,
-        compression: SvsExportCompression.jpeg2000,
-      );
+    final outBytes = await exportSvsRegionAsSvs(
+      svs,
+      level: 0,
+      x: 0,
+      y: 0,
+      width: 300,
+      height: 300,
+      tileSize: 128,
+      compression: SvsExportCompression.jpeg2000,
+    );
 
-      final outFile = File('${tempDir.path}/out.svs');
-      await outFile.writeAsBytes(outBytes);
-      final roundTripped = await SvsFile.open(outFile.path);
-      addTearDown(roundTripped.close);
+    final outFile = File('${tempDir.path}/out.svs');
+    await outFile.writeAsBytes(outBytes);
+    final roundTripped = await SvsFile.open(outFile.path);
+    addTearDown(roundTripped.close);
 
-      expect(roundTripped.levels[0].isJp2k, isTrue);
-      expect(roundTripped.levels[0].width, 300);
-      expect(roundTripped.levels[0].height, 300);
+    expect(roundTripped.levels[0].isJp2k, isTrue);
+    expect(roundTripped.levels[0].width, 300);
+    expect(roundTripped.levels[0].height, 300);
 
-      // Reads a region that only the boundary tile (tx=2, ty=2) covers —
-      // exercises the padded-tile decode path directly, not just its
-      // interior full-size neighbors.
-      final region = await readSvsRegion(
-        roundTripped,
-        level: 0,
-        x: 280,
-        y: 280,
-        width: 20,
-        height: 20,
-      );
-      addTearDown(region.dispose);
-      final data = await region.toByteData();
-      final pixels = data!.buffer.asUint8List();
-      expect(pixels[0], closeTo(10, 2));
-      expect(pixels[1], closeTo(150, 2));
-      expect(pixels[2], closeTo(220, 2));
-    },
-  );
+    // Reads a region that only the boundary tile (tx=2, ty=2) covers —
+    // exercises the padded-tile decode path directly, not just its
+    // interior full-size neighbors.
+    final region = await readSvsRegion(
+      roundTripped,
+      level: 0,
+      x: 280,
+      y: 280,
+      width: 20,
+      height: 20,
+    );
+    addTearDown(region.dispose);
+    final data = await region.toByteData();
+    final pixels = data!.buffer.asUint8List();
+    expect(pixels[0], closeTo(10, 2));
+    expect(pixels[1], closeTo(150, 2));
+    expect(pixels[2], closeTo(220, 2));
+  });
 
   test(
     'round-trips a crop bigger than one tile: multiple pyramid levels are generated',
@@ -821,119 +877,115 @@ void main() {
     },
   );
 
-  test(
-    'the exported file carries over the source label image and other '
-    'ImageDescription metadata, unmodified',
-    () async {
-      final file = await _buildFixtureWithLabel(
-        tempDir,
-        'src.svs',
-        size: 64,
-        color: (200, 100, 50),
-        labelSize: 32,
-        labelColor: (30, 200, 60),
-        imageDescription:
-            'Aperio Image Library v11.2.1\r\n'
-            '64x64 [0,0 64x64] (64x64) JPEG/RGB Q=30|AppMag = 20|'
-            'MPP = 0.4990|ScanScope ID = SS1234|Filename = orig.svs|'
-            'Left = 12.3|Top = 4.5|OriginalWidth = 9999|OriginalHeight = 8888',
-      );
-      final svs = await SvsFile.open(file.path);
-      addTearDown(svs.close);
-      expect(
-        svs.associatedImages.single.kind,
-        AssociatedImageKind.label,
-      ); // sanity-check the fixture itself before exporting it
+  test('the exported file carries over the source label image and other '
+      'ImageDescription metadata, unmodified', () async {
+    final file = await _buildFixtureWithLabel(
+      tempDir,
+      'src.svs',
+      size: 64,
+      color: (200, 100, 50),
+      labelSize: 32,
+      labelColor: (30, 200, 60),
+      imageDescription:
+          'Aperio Image Library v11.2.1\r\n'
+          '64x64 [0,0 64x64] (64x64) JPEG/RGB Q=30|AppMag = 20|'
+          'MPP = 0.4990|ScanScope ID = SS1234|Filename = orig.svs|'
+          'Left = 12.3|Top = 4.5|OriginalWidth = 9999|OriginalHeight = 8888',
+    );
+    final svs = await SvsFile.open(file.path);
+    addTearDown(svs.close);
+    expect(
+      svs.associatedImages.single.kind,
+      AssociatedImageKind.label,
+    ); // sanity-check the fixture itself before exporting it
 
-      final outBytes = await exportSvsRegionAsSvs(
-        svs,
-        level: 0,
-        x: 0,
-        y: 0,
-        width: 64,
-        height: 64,
-        tileSize: 256,
-      );
+    final outBytes = await exportSvsRegionAsSvs(
+      svs,
+      level: 0,
+      x: 0,
+      y: 0,
+      width: 64,
+      height: 64,
+      tileSize: 256,
+    );
 
-      final outFile = File('${tempDir.path}/out.svs');
-      await outFile.writeAsBytes(outBytes);
-      final roundTripped = await SvsFile.open(outFile.path);
-      addTearDown(roundTripped.close);
+    final outFile = File('${tempDir.path}/out.svs');
+    await outFile.writeAsBytes(outBytes);
+    final roundTripped = await SvsFile.open(outFile.path);
+    addTearDown(roundTripped.close);
 
-      final labels = roundTripped.associatedImages.where(
+    final labels = roundTripped.associatedImages.where(
+      (a) => a.kind == AssociatedImageKind.label,
+    );
+    expect(labels, hasLength(1));
+    final label = labels.single;
+    expect(label.width, 32);
+    expect(label.height, 32);
+    expect(label.isDecodable, isTrue);
+
+    final decoded = await decodeAssociatedImage(label);
+    addTearDown(decoded.dispose);
+    final data = await decoded.toByteData();
+    final pixels = data!.buffer.asUint8List();
+    expect(pixels[0], closeTo(30, 10));
+    expect(pixels[1], closeTo(200, 10));
+    expect(pixels[2], closeTo(60, 10));
+
+    // Non-positional metadata survives verbatim...
+    expect(roundTripped.metadata.raw['ScanScope ID'], 'SS1234');
+    expect(roundTripped.metadata.raw['Filename'], 'orig.svs');
+    // ...but fields describing the source image's position/size *within
+    // the original slide* don't carry over — they'd be wrong for a crop.
+    expect(roundTripped.metadata.raw.containsKey('Left'), isFalse);
+    expect(roundTripped.metadata.raw.containsKey('Top'), isFalse);
+    expect(roundTripped.metadata.raw.containsKey('OriginalWidth'), isFalse);
+    expect(roundTripped.metadata.raw.containsKey('OriginalHeight'), isFalse);
+  });
+
+  test('includeLabelAndMacroImages: false omits the label/macro images but '
+      'keeps the thumbnail', () async {
+    final file = await _buildFixtureWithLabel(
+      tempDir,
+      'src.svs',
+      size: 64,
+      color: (200, 100, 50),
+      labelSize: 32,
+      labelColor: (30, 200, 60),
+    );
+    final svs = await SvsFile.open(file.path);
+    addTearDown(svs.close);
+
+    final outBytes = await exportSvsRegionAsSvs(
+      svs,
+      level: 0,
+      x: 0,
+      y: 0,
+      width: 64,
+      height: 64,
+      tileSize: 256,
+      includeLabelAndMacroImages: false,
+    );
+
+    final outFile = File('${tempDir.path}/out.svs');
+    await outFile.writeAsBytes(outBytes);
+    final roundTripped = await SvsFile.open(outFile.path);
+    addTearDown(roundTripped.close);
+
+    expect(
+      roundTripped.associatedImages.where(
         (a) => a.kind == AssociatedImageKind.label,
-      );
-      expect(labels, hasLength(1));
-      final label = labels.single;
-      expect(label.width, 32);
-      expect(label.height, 32);
-      expect(label.isDecodable, isTrue);
-
-      final decoded = await decodeAssociatedImage(label);
-      addTearDown(decoded.dispose);
-      final data = await decoded.toByteData();
-      final pixels = data!.buffer.asUint8List();
-      expect(pixels[0], closeTo(30, 10));
-      expect(pixels[1], closeTo(200, 10));
-      expect(pixels[2], closeTo(60, 10));
-
-      // Non-positional metadata survives verbatim...
-      expect(roundTripped.metadata.raw['ScanScope ID'], 'SS1234');
-      expect(roundTripped.metadata.raw['Filename'], 'orig.svs');
-      // ...but fields describing the source image's position/size *within
-      // the original slide* don't carry over — they'd be wrong for a crop.
-      expect(roundTripped.metadata.raw.containsKey('Left'), isFalse);
-      expect(roundTripped.metadata.raw.containsKey('Top'), isFalse);
-      expect(roundTripped.metadata.raw.containsKey('OriginalWidth'), isFalse);
-      expect(roundTripped.metadata.raw.containsKey('OriginalHeight'), isFalse);
-    },
-  );
-
-  test(
-    'includeLabelAndMacroImages: false omits the label/macro images but '
-    'keeps the thumbnail',
-    () async {
-      final file = await _buildFixtureWithLabel(
-        tempDir,
-        'src.svs',
-        size: 64,
-        color: (200, 100, 50),
-        labelSize: 32,
-        labelColor: (30, 200, 60),
-      );
-      final svs = await SvsFile.open(file.path);
-      addTearDown(svs.close);
-
-      final outBytes = await exportSvsRegionAsSvs(
-        svs,
-        level: 0,
-        x: 0,
-        y: 0,
-        width: 64,
-        height: 64,
-        tileSize: 256,
-        includeLabelAndMacroImages: false,
-      );
-
-      final outFile = File('${tempDir.path}/out.svs');
-      await outFile.writeAsBytes(outBytes);
-      final roundTripped = await SvsFile.open(outFile.path);
-      addTearDown(roundTripped.close);
-
-      expect(
-        roundTripped.associatedImages
-            .where((a) => a.kind == AssociatedImageKind.label),
-        isEmpty,
-      );
-      // The thumbnail (unrelated to includeLabelAndMacroImages) still shows
-      // up — it's always generated from the crop itself.
-      expect(
-        roundTripped.associatedImages
-            .where((a) => a.kind == AssociatedImageKind.thumbnail),
-        hasLength(1),
-      );
-    },
-  );
+      ),
+      isEmpty,
+    );
+    // The thumbnail (unrelated to includeLabelAndMacroImages) still shows
+    // up — it's always generated from the crop itself.
+    expect(
+      roundTripped.associatedImages.where(
+        (a) => a.kind == AssociatedImageKind.thumbnail,
+      ),
+      hasLength(1),
+    );
+  });
 
   test(
     'includeSourceMetadata: false keeps only the recomputed AppMag/MPP',
@@ -1095,5 +1147,173 @@ void main() {
     addTearDown(roundTripped.close);
     expect(roundTripped.levels.single.width, 64);
     expect(roundTripped.levels.single.height, 64);
+  });
+
+  group('exportSvsRegionAsSvsPreservingLevels', () {
+    test('crops each output level directly from the matching source level, '
+        'not by downsampling the finest one', () async {
+      // Non-2x downsample steps (ds=1, 3, 12) — exactly the kind of real
+      // Aperio pyramid exportSvsRegionAsSvs's halving approach could never
+      // reproduce. Each level gets its own distinct solid color so a
+      // level's own pixels (not some box-downsampled blend of a finer
+      // level's color) can be told apart directly.
+      final file = await _buildMultiLevelJpegFixture(
+        tempDir,
+        'src.svs',
+        levelSizes: [120, 40, 10],
+        levelColors: [(200, 20, 20), (20, 200, 20), (20, 20, 200)],
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+      expect(svs.levels, hasLength(3));
+
+      final outBytes = await exportSvsRegionAsSvsPreservingLevels(
+        svs,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 120,
+        tileSize: 256,
+      );
+
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
+
+      expect(roundTripped.levels, hasLength(3));
+      expect(roundTripped.levels[0].width, 120);
+      expect(roundTripped.levels[1].width, 40);
+      expect(roundTripped.levels[2].width, 10);
+      // The source's own relative downsample steps (3x, 12x) survive,
+      // unlike exportSvsRegionAsSvs's always-2x-stepped pyramid.
+      expect(roundTripped.levels[1].downsample, closeTo(3.0, 0.01));
+      expect(roundTripped.levels[2].downsample, closeTo(12.0, 0.01));
+
+      Future<List<int>> pixelAt(int level) async {
+        final region = await readSvsRegion(
+          roundTripped,
+          level: level,
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 1,
+        );
+        addTearDown(region.dispose);
+        final data = await region.toByteData();
+        return data!.buffer.asUint8List().sublist(0, 3);
+      }
+
+      final level0Pixel = await pixelAt(0);
+      final level1Pixel = await pixelAt(1);
+      final level2Pixel = await pixelAt(2);
+      expect(level0Pixel[0], closeTo(200, 10));
+      expect(level0Pixel[1], closeTo(20, 10));
+      // If this were downsampled from level 0 instead of cropped from the
+      // source's own green level 1, it would read back close to level 0's
+      // red, not green.
+      expect(level1Pixel[0], closeTo(20, 10));
+      expect(level1Pixel[1], closeTo(200, 10));
+      expect(level2Pixel[0], closeTo(20, 10));
+      expect(level2Pixel[2], closeTo(200, 10));
+    });
+
+    test('cropping from a non-zero level only includes that level and coarser '
+        'ones, not finer ones', () async {
+      final file = await _buildMultiLevelJpegFixture(
+        tempDir,
+        'src.svs',
+        levelSizes: [120, 40, 10],
+        levelColors: [(200, 20, 20), (20, 200, 20), (20, 20, 200)],
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+
+      final outBytes = await exportSvsRegionAsSvsPreservingLevels(
+        svs,
+        level: 1,
+        x: 0,
+        y: 0,
+        width: 40,
+        height: 40,
+        tileSize: 256,
+      );
+
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
+
+      expect(roundTripped.levels, hasLength(2));
+      expect(roundTripped.levels[0].width, 40);
+      expect(roundTripped.levels[1].width, 10);
+      expect(roundTripped.levels[1].downsample, closeTo(4.0, 0.01));
+    });
+
+    test('matchSourceCompression parses the quality of the level being cropped '
+        'from, same as exportSvsRegionAsSvs', () async {
+      final file = await _buildMultiLevelJpegFixture(
+        tempDir,
+        'src.svs',
+        levelSizes: [120, 40, 10],
+        levelColors: [(200, 20, 20), (20, 200, 20), (20, 20, 200)],
+        level0ImageDescription:
+            'Aperio Image Library v11.2.1\r\n'
+            '120x120 [0,0 120x120] (120x120) JPEG/RGB Q=42|AppMag = 20',
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+
+      final outBytes = await exportSvsRegionAsSvsPreservingLevels(
+        svs,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 120,
+        tileSize: 256,
+        matchSourceCompression: true,
+      );
+
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
+
+      final description = await roundTripped.levels[0].imageDescription;
+      expect(description, contains('Q=42'));
+    });
+
+    test(
+      'exportSvsRegionAsSvsPreservingLevelsToFile writes the same bytes to disk',
+      () async {
+        final file = await _buildMultiLevelJpegFixture(
+          tempDir,
+          'src.svs',
+          levelSizes: [120, 40, 10],
+          levelColors: [(200, 20, 20), (20, 200, 20), (20, 20, 200)],
+        );
+        final svs = await SvsFile.open(file.path);
+        addTearDown(svs.close);
+
+        final outPath = '${tempDir.path}/out.svs';
+        final outFile = await exportSvsRegionAsSvsPreservingLevelsToFile(
+          svs,
+          path: outPath,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 120,
+          height: 120,
+          tileSize: 256,
+        );
+        expect(outFile.path, outPath);
+
+        final roundTripped = await SvsFile.open(outPath);
+        addTearDown(roundTripped.close);
+        expect(roundTripped.levels, hasLength(3));
+      },
+    );
   });
 }
