@@ -20,7 +20,10 @@ import 'tile_cache.dart' show TileCacheKey;
 /// the slide's own file path/hash), since keys only distinguish
 /// level/tile-x/tile-y, not which slide they belong to.
 class DiskTileCache {
+  /// The directory each tile is stored under, as set via [open].
   final Directory directory;
+
+  /// The decoded-pixel byte budget, as set via [open].
   final int maxBytes;
 
   final _entries = <TileCacheKey, _DiskEntry>{};
@@ -28,9 +31,13 @@ class DiskTileCache {
 
   DiskTileCache._(this.directory, this.maxBytes);
 
+  /// Total decoded-pixel bytes currently on disk, across every cached tile.
   int get currentBytes => _currentBytes;
+
+  /// Number of tiles currently cached on disk.
   int get length => _entries.length;
 
+  /// Whether [key]'s tile is currently cached on disk.
   bool contains(TileCacheKey key) => _entries.containsKey(key);
 
   /// Opens (creating if needed) a disk cache rooted at [directory],

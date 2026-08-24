@@ -23,7 +23,21 @@ const _rawRasterCompressions = {
 
 const _supportedLevelCompressions = {ApCompression.newJpeg, ApCompression.jp2k};
 
-enum AssociatedImageKind { label, macro, thumbnail }
+/// What a non-tiled [SvsAssociatedImage] embedded in an SVS file actually
+/// shows — classified from its `ImageDescription`, since TIFF itself has no
+/// tag for this.
+enum AssociatedImageKind {
+  /// The slide's physical label (barcode/handwritten ID), usually the small
+  /// image printed on the slide itself.
+  label,
+
+  /// A gross ("macro") photo of the whole slide, including the label.
+  macro,
+
+  /// A scanner-generated low-resolution preview of the tissue — what
+  /// [SvsImageView]'s minimap uses.
+  thumbnail,
+}
 
 /// A non-tiled image embedded alongside the pyramid — the slide label,
 /// a macro (gross) photo, or a scanner-generated thumbnail.

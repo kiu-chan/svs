@@ -19,7 +19,7 @@ enum SvsImageFormat {
   /// slide's edge).
   png,
 
-  /// Lossy, no alpha channel — [encodeSvsImage]'s [quality] parameter only
+  /// Lossy, no alpha channel — [encodeSvsImage]'s `quality` parameter only
   /// applies here. Smallest files, best for photographic tissue regions
   /// where some compression artifacting is acceptable.
   jpeg,

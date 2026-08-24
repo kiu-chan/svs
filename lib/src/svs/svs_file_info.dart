@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import '../tiff/tiff_tag_names.dart';
 import 'svs_metadata.dart';
 
-/// Every TIFF tag on one IFD, decoded — see [TiffIfd.readAllValues] for how
+/// Every TIFF tag on one IFD, decoded — see `TiffIfd.readAllValues` for how
 /// each value is decoded. In [SvsFileInfo.levels], [index] is the pyramid
 /// level index (`SvsLevel.index`); in [SvsFileInfo.associatedImages], it's
 /// the raw IFD index within the file (`SvsAssociatedImage.ifdIndex`).

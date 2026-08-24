@@ -45,10 +45,13 @@ class TileCache {
 
   TileCache({this.maxBytes = 150 * 1024 * 1024});
 
+  /// Total decoded-pixel bytes currently cached, across every tile.
   int get currentBytes => _currentBytes;
 
+  /// Number of tiles currently cached.
   int get length => _entries.length;
 
+  /// Whether [key]'s tile is currently cached.
   bool contains(TileCacheKey key) => _entries.containsKey(key);
 
   /// Returns the cached image for [key], touching it as most-recently-used,

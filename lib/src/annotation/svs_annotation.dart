@@ -80,9 +80,11 @@ class SvsAnnotation {
   }
 
   /// Whether [point] (level-0 coordinates) lies within [tolerance] level-0
-  /// pixels of this annotation — used for tap hit-testing. [point] and
-  /// [polyline] shapes always hit-test against their outline; [rectangle]
-  /// and [polygon] additionally count any interior point when [filled].
+  /// pixels of this annotation — used for tap hit-testing.
+  /// [SvsAnnotationShapeType.point] and [SvsAnnotationShapeType.polyline]
+  /// shapes always hit-test against their outline;
+  /// [SvsAnnotationShapeType.rectangle] and [SvsAnnotationShapeType.polygon]
+  /// additionally count any interior point when [filled].
   bool hitTest(Offset point, double tolerance) {
     switch (type) {
       case SvsAnnotationShapeType.point:
