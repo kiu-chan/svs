@@ -11,7 +11,8 @@ never loaded into memory, however large the slide.
 
 * **Pan & zoom viewer** (`SvsImageView`) with a minimap, zoom percentage,
   and a physical scale bar (µm/mm, derived from the slide's own
-  microns-per-pixel metadata).
+  microns-per-pixel metadata) — each independently toggleable
+  (`showMinimap`/`showZoomLevel`/`showScaleBar`).
 * **Level-of-detail tile streaming**: only the visible region's tiles are
   fetched and decoded, at the resolution level that matches the current
   zoom — panning and zooming a multi-gigapixel slide stays smooth.
@@ -78,7 +79,17 @@ await svsFile.close();
 ```
 
 `SvsImageView` handles pan/zoom gestures, tile streaming, and the minimap/
-HUD on its own — no further wiring needed.
+HUD on its own — no further wiring needed. Each overlay can be turned off
+independently:
+
+```dart
+SvsImageView(
+  svsFile: svsFile,
+  showMinimap: false, // skips decoding the thumbnail entirely, not just hiding it
+  showZoomLevel: false,
+  showScaleBar: false,
+);
+```
 
 ### Persistent tile cache
 

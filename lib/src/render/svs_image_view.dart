@@ -77,6 +77,19 @@ class SvsImageView extends StatefulWidget {
   /// — it's a GPU color filter, not a per-tile re-decode.
   final SvsImageAdjustments adjustments;
 
+  /// Whether the top-right minimap (thumbnail + viewport rectangle) shows.
+  /// When false, the slide's thumbnail is never even decoded — not just
+  /// hidden — since nothing else in this widget needs it.
+  final bool showMinimap;
+
+  /// Whether the bottom-left HUD shows the current zoom percentage.
+  final bool showZoomLevel;
+
+  /// Whether the bottom-left HUD shows the physical (µm/mm) scale bar. No
+  /// effect if the slide has no microns-per-pixel metadata — there's never
+  /// a bar to show either way in that case.
+  final bool showScaleBar;
+
   const SvsImageView({
     super.key,
     required this.svsFile,
@@ -90,6 +103,9 @@ class SvsImageView extends StatefulWidget {
     this.hitTestTolerance = 12,
     this.showMeasurements = true,
     this.adjustments = SvsImageAdjustments.none,
+    this.showMinimap = true,
+    this.showZoomLevel = true,
+    this.showScaleBar = true,
   });
 
   @override
@@ -126,7 +142,7 @@ class _SvsImageViewState extends State<SvsImageView>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _lod.addListener(_onTilesChanged);
-    unawaited(_loadOverview());
+    if (widget.showMinimap) unawaited(_loadOverview());
   }
 
   void _onTilesChanged() {
@@ -205,12 +221,30 @@ class _SvsImageViewState extends State<SvsImageView>
   bool get _isDraftingRect =>
       widget.annotationController?.drawMode == SvsAnnotationDrawMode.rectangle;
 
+  /// Whether an annotation shape is actively being drawn — while true,
+  /// pan/zoom must stay fully inert. Rectangle mode already gets its own
+  /// dedicated drag handling below ([_isDraftingRect]); point/polyline/
+  /// polygon mode instead places vertices via [_onTapUp], one tap at a
+  /// time — but the same [GestureDetector] still runs a `ScaleGestureRecognizer`
+  /// underneath every tap (`onScaleStart`/`onScaleUpdate` fire on pointer
+  /// down/move regardless of draw mode). Left unguarded, a quick series of
+  /// taps placing several vertices could have its pointer-down/up events
+  /// overlap enough for the recognizer to briefly see two "concurrent"
+  /// pointers and compute a wild span-ratio scale from them — visible as the
+  /// zoom-percent HUD jumping to a nonsensical number. Suppressing pan/zoom
+  /// outright for the whole time a shape is being drawn removes that failure
+  /// mode entirely, instead of chasing the exact recognizer race.
+  bool get _isDrawingAnnotation =>
+      widget.annotationController != null &&
+      widget.annotationController!.drawMode != SvsAnnotationDrawMode.none;
+
   void _onScaleStart(ScaleStartDetails details) {
     final controller = widget.annotationController;
     if (controller != null && _isDraftingRect) {
       controller.startRectDraft(_toLevel0(details.localFocalPoint));
       return;
     }
+    if (_isDrawingAnnotation) return;
     _gestureStartScale = _scale;
     _gestureStartOrigin = _origin;
     _gestureStartFocalPoint = details.localFocalPoint;
@@ -222,6 +256,7 @@ class _SvsImageViewState extends State<SvsImageView>
       controller.updateRectDraft(_toLevel0(details.localFocalPoint));
       return;
     }
+    if (_isDrawingAnnotation) return;
     _zoomAndPanTo(
       startScale: _gestureStartScale,
       startOrigin: _gestureStartOrigin,
@@ -238,6 +273,7 @@ class _SvsImageViewState extends State<SvsImageView>
       controller.commitRectDraft();
       return;
     }
+    if (_isDrawingAnnotation) return;
     _lod.flushNow(_viewportSize!, _scale, _origin);
   }
 
@@ -378,15 +414,18 @@ class _SvsImageViewState extends State<SvsImageView>
                     ),
                   ),
                 ),
-              Positioned(
-                left: 12,
-                bottom: 12,
-                child: _HudOverlay(
-                  scale: _scale,
-                  mppX: widget.svsFile.metadata.mppX,
+              if (widget.showZoomLevel || widget.showScaleBar)
+                Positioned(
+                  left: 12,
+                  bottom: 12,
+                  child: _HudOverlay(
+                    scale: _scale,
+                    mppX: widget.svsFile.metadata.mppX,
+                    showZoomLevel: widget.showZoomLevel,
+                    showScaleBar: widget.showScaleBar,
+                  ),
                 ),
-              ),
-              if (overview != null)
+              if (overview != null && widget.showMinimap)
                 Positioned(
                   right: 12,
                   top: 12,
@@ -704,18 +743,29 @@ class _AnnotationPainter extends CustomPainter {
 
 /// Bottom-left HUD: current zoom percentage (100% = one screen pixel per
 /// level-0 pixel) and, when the slide's microns-per-pixel is known, a
-/// physical scale bar.
+/// physical scale bar — either half independently toggleable via
+/// [showZoomLevel]/[showScaleBar]. Only built at all when at least one of
+/// them is true (see the caller in [_SvsImageViewState.build]).
 class _HudOverlay extends StatelessWidget {
   final double scale;
   final double? mppX;
+  final bool showZoomLevel;
+  final bool showScaleBar;
 
-  const _HudOverlay({required this.scale, required this.mppX});
+  const _HudOverlay({
+    required this.scale,
+    required this.mppX,
+    required this.showZoomLevel,
+    required this.showScaleBar,
+  });
 
   @override
   Widget build(BuildContext context) {
     final zoomPercent = (scale * 100).round();
     final mpp = mppX;
-    final bar = mpp == null ? null : _pickScaleBar(mpp / scale);
+    final bar = (showScaleBar && mpp != null)
+        ? _pickScaleBar(mpp / scale)
+        : null;
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -737,16 +787,17 @@ class _HudOverlay extends StatelessWidget {
                 bar.label,
                 style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 12),
               ),
-              const SizedBox(width: 12),
+              if (showZoomLevel) const SizedBox(width: 12),
             ],
-            Text(
-              '$zoomPercent%',
-              style: const TextStyle(
-                color: Color(0xFFFFFFFF),
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
+            if (showZoomLevel)
+              Text(
+                '$zoomPercent%',
+                style: const TextStyle(
+                  color: Color(0xFFFFFFFF),
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-            ),
           ],
         ),
       ),

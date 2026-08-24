@@ -20,6 +20,17 @@
   `ImageDescription`) instead of a single flat raster image — the result can
   be reopened with `SvsFile.open`, by this package or any other tiled-TIFF/
   OpenSlide-aware tool, and panned/zoomed like any other slide.
+* `SvsImageView.showMinimap`/`showZoomLevel`/`showScaleBar`: independently
+  toggle the minimap, the zoom-percentage HUD text, and the physical scale
+  bar — all default to `true` (unchanged behavior). `showMinimap: false`
+  skips decoding the slide's thumbnail entirely, not just hiding it.
+* Fixed: `SvsImageView`'s zoom-percent HUD could jump to a garbage value
+  while drawing a point/polyline/polygon annotation. Only rectangle mode
+  used to suppress pan/zoom while drawing; point/polyline/polygon mode
+  placed vertices via tap but left the underlying pan/zoom gesture live
+  underneath, so a quick run of taps could occasionally be misread as a
+  pinch. Pan/zoom is now fully suppressed for the whole time any annotation
+  shape is being drawn.
 
 ## 0.3.0
 
