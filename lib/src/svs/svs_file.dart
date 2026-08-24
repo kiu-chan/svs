@@ -248,7 +248,8 @@ class SvsAssociatedImage {
   /// copying this image into a new file (see [readRawStripBytes]) needs to
   /// carry this forward verbatim, or a copied label/macro image would be
   /// reclassified as a bare thumbnail on reopen.
-  Future<String?> get imageDescription => _ifd.readAscii(ApTag.imageDescription);
+  Future<String?> get imageDescription =>
+      _ifd.readAscii(ApTag.imageDescription);
 
   /// Every TIFF tag on this associated image's IFD, decoded — the "full
   /// info" dump for this image. See [TiffIfd.readAllValues].

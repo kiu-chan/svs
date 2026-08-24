@@ -395,7 +395,12 @@ PyramidHeaderLayout planPyramidHeader(
         1,
         encodeTiffInts([image.rowsPerStrip], TiffType.long, order),
       ),
-      _PendingTag(279, TiffType.long, image.stripCount, null), // StripByteCounts
+      _PendingTag(
+        279,
+        TiffType.long,
+        image.stripCount,
+        null,
+      ), // StripByteCounts
       _PendingTag(
         317,
         TiffType.short,
