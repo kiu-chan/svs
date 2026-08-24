@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:openjpeg_ffi/openjpeg_ffi.dart';
 import 'package:svs/src/errors.dart';
 import 'package:svs/src/render/associated_image_decoder.dart';
 import 'package:svs/src/render/region_decoder.dart';
@@ -137,6 +138,75 @@ Future<File> _buildFixtureWithLabel(
 
   final file = File('${dir.path}/$name');
   await file.writeAsBytes([...header, ...tileJpeg, ...labelJpeg]);
+  return file;
+}
+
+/// Same as [_buildSingleTileJpegFixture], but the tile is a real JPEG2000
+/// codestream (`Compression` tag 33005) encoded at [compressionRatio] —
+/// needed to exercise `matchSourceCompression`'s JP2K path against a source
+/// whose on-disk tile size reflects genuine (possibly lossy) compression,
+/// not just a relabeled JPEG tile.
+Future<File> _buildSingleTileJp2kFixture(
+  Directory dir,
+  String name, {
+  required int size,
+  required (int, int, int) color,
+  required double compressionRatio,
+}) async {
+  final tile = img.Image(width: size, height: size);
+  img.fill(tile, color: img.ColorRgb8(color.$1, color.$2, color.$3));
+  return _writeSingleTileJp2kFixture(
+    dir,
+    name,
+    tile: tile,
+    compressionRatio: compressionRatio,
+  );
+}
+
+/// Lower-level counterpart to [_buildSingleTileJp2kFixture] that takes the
+/// tile image directly — needed by tests where a flat solid color (already
+/// near-minimal even losslessly) wouldn't tell a lossy ratio apart from
+/// lossless.
+Future<File> _writeSingleTileJp2kFixture(
+  Directory dir,
+  String name, {
+  required img.Image tile,
+  required double compressionRatio,
+}) async {
+  final size = tile.width;
+  final tileJ2k = encodeJ2k(
+    tile.getBytes(order: img.ChannelOrder.rgb),
+    width: size,
+    height: size,
+    numComponents: 3,
+    compressionRatio: compressionRatio,
+  );
+
+  List<TestTag> tags(int tileOffset) => [
+    TestTag.ints(256, TiffType.long, [size], Endian.little),
+    TestTag.ints(257, TiffType.long, [size], Endian.little),
+    TestTag.ints(259, TiffType.short, [33005], Endian.little), // JPEG2000
+    TestTag.ints(322, TiffType.long, [size], Endian.little),
+    TestTag.ints(323, TiffType.long, [size], Endian.little),
+    TestTag.ints(324, TiffType.long, [tileOffset], Endian.little),
+    TestTag.ints(325, TiffType.long, [tileJ2k.length], Endian.little),
+  ];
+
+  final headerOnly = buildTiff(
+    bigTiff: false,
+    order: Endian.little,
+    ifds: [tags(0)],
+  );
+  final realOffset = headerOnly.length;
+  final header = buildTiff(
+    bigTiff: false,
+    order: Endian.little,
+    ifds: [tags(realOffset)],
+  );
+  expect(header.length, realOffset);
+
+  final file = File('${dir.path}/$name');
+  await file.writeAsBytes([...header, ...tileJ2k]);
   return file;
 }
 
@@ -348,6 +418,248 @@ void main() {
       expect(pixels[2], closeTo(50, 2)); // B
     },
   );
+
+  group('matchSourceCompression', () {
+    test(
+      'parses the source JPEG quality out of its ImageDescription instead '
+      'of using the quality parameter',
+      () async {
+        final file = await _buildSingleTileJpegFixture(
+          tempDir,
+          'src.svs',
+          size: 64,
+          color: (200, 100, 50),
+          imageDescription:
+              'Aperio Image Library v11.2.1\r\n'
+              '64x64 [0,0 64x64] (64x64) JPEG/RGB Q=37|AppMag = 20',
+        );
+        final svs = await SvsFile.open(file.path);
+        addTearDown(svs.close);
+
+        final outBytes = await exportSvsRegionAsSvs(
+          svs,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 64,
+          height: 64,
+          tileSize: 256,
+          quality: 90, // ignored: matchSourceCompression wins
+          matchSourceCompression: true,
+        );
+
+        final outFile = File('${tempDir.path}/out.svs');
+        await outFile.writeAsBytes(outBytes);
+        final roundTripped = await SvsFile.open(outFile.path);
+        addTearDown(roundTripped.close);
+
+        expect(roundTripped.levels.single.isJpeg, isTrue);
+        final description = await roundTripped.levels.single.imageDescription;
+        expect(description, contains('Q=37'));
+      },
+    );
+
+    test(
+      'falls back to the quality parameter when the source has no Q= to match',
+      () async {
+        final file = await _buildSingleTileJpegFixture(
+          tempDir,
+          'src.svs',
+          size: 64,
+          color: (200, 100, 50),
+          // No imageDescription at all -> nothing to parse a quality from.
+        );
+        final svs = await SvsFile.open(file.path);
+        addTearDown(svs.close);
+
+        final outBytes = await exportSvsRegionAsSvs(
+          svs,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 64,
+          height: 64,
+          tileSize: 256,
+          quality: 55,
+          matchSourceCompression: true,
+        );
+
+        final outFile = File('${tempDir.path}/out.svs');
+        await outFile.writeAsBytes(outBytes);
+        final roundTripped = await SvsFile.open(outFile.path);
+        addTearDown(roundTripped.close);
+
+        final description = await roundTripped.levels.single.imageDescription;
+        expect(description, contains('Q=55'));
+      },
+    );
+
+    test(
+      'switches to JPEG2000 to match a JP2K source, even though the '
+      'compression parameter still says JPEG',
+      () async {
+        final file = await _buildSingleTileJp2kFixture(
+          tempDir,
+          'src.svs',
+          size: 64,
+          color: (10, 150, 220),
+          compressionRatio: 20,
+        );
+        final svs = await SvsFile.open(file.path);
+        addTearDown(svs.close);
+
+        final outBytes = await exportSvsRegionAsSvs(
+          svs,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 64,
+          height: 64,
+          tileSize: 256,
+          compression: SvsExportCompression.jpeg, // ignored
+          matchSourceCompression: true,
+        );
+
+        final outFile = File('${tempDir.path}/out.svs');
+        await outFile.writeAsBytes(outBytes);
+        final roundTripped = await SvsFile.open(outFile.path);
+        addTearDown(roundTripped.close);
+
+        expect(roundTripped.levels.single.isJp2k, isTrue);
+        expect(roundTripped.levels.single.isJpeg, isFalse);
+      },
+    );
+
+    test(
+      'estimates a lossy JP2K ratio from the source\'s own tile size instead '
+      'of defaulting to lossless',
+      () async {
+        // A gradient (unlike a flat color, already near-minimal even
+        // losslessly) has real entropy for a compressionRatio to bite into,
+        // so matching a lossy source ratio should land visibly smaller than
+        // the lossless default would.
+        final tile = img.Image(width: 64, height: 64);
+        for (var y = 0; y < 64; y++) {
+          for (var x = 0; x < 64; x++) {
+            tile.setPixelRgb(x, y, (x * 4) % 256, (y * 4) % 256, (x ^ y));
+          }
+        }
+        final file = await _writeSingleTileJp2kFixture(
+          tempDir,
+          'src.svs',
+          tile: tile,
+          compressionRatio: 60,
+        );
+        final svs = await SvsFile.open(file.path);
+        addTearDown(svs.close);
+
+        final outBytes = await exportSvsRegionAsSvs(
+          svs,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 64,
+          height: 64,
+          // Matches the 64x64 crop exactly -> no JP2K boundary-tile padding,
+          // which would otherwise dilute the lossy-vs-lossless size gap this
+          // test is checking for with fixed, ratio-independent zero padding.
+          tileSize: 64,
+          matchSourceCompression: true,
+        );
+        final losslessBytes = await exportSvsRegionAsSvs(
+          svs,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 64,
+          height: 64,
+          tileSize: 64,
+          compression: SvsExportCompression.jpeg2000, // default: lossless
+        );
+
+        final outFile = File('${tempDir.path}/out.svs');
+        await outFile.writeAsBytes(outBytes);
+        final roundTripped = await SvsFile.open(outFile.path);
+        addTearDown(roundTripped.close);
+
+        expect(roundTripped.levels.single.isJp2k, isTrue);
+        // Matching the source's own lossy ratio should land meaningfully
+        // smaller than exporting the same crop lossless (ratio 0) would —
+        // otherwise the estimate silently fell back to lossless.
+        expect(outBytes.length, lessThan(losslessBytes.length));
+      },
+    );
+
+    test(
+      'defaults tileSize to the source level\'s own tile edge length instead '
+      'of 256',
+      () async {
+        // This fixture's single tile spans the whole 40x40 image, so its
+        // tileWidth/tileLength are 40 — nothing like this function's own
+        // 256 default, making the two easy to tell apart.
+        final file = await _buildSingleTileJpegFixture(
+          tempDir,
+          'src.svs',
+          size: 40,
+          color: (200, 100, 50),
+        );
+        final svs = await SvsFile.open(file.path);
+        addTearDown(svs.close);
+        expect(svs.levels.single.tileWidth, 40);
+
+        final outBytes = await exportSvsRegionAsSvs(
+          svs,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 40,
+          height: 40,
+          // tileSize deliberately omitted -> auto.
+          matchSourceCompression: true,
+        );
+
+        final outFile = File('${tempDir.path}/out.svs');
+        await outFile.writeAsBytes(outBytes);
+        final roundTripped = await SvsFile.open(outFile.path);
+        addTearDown(roundTripped.close);
+
+        expect(roundTripped.levels.single.tileWidth, 40);
+        expect(roundTripped.levels.single.tileLength, 40);
+      },
+    );
+
+    test(
+      'an explicit tileSize still overrides the source-matched default',
+      () async {
+        final file = await _buildSingleTileJpegFixture(
+          tempDir,
+          'src.svs',
+          size: 40,
+          color: (200, 100, 50),
+        );
+        final svs = await SvsFile.open(file.path);
+        addTearDown(svs.close);
+
+        final outBytes = await exportSvsRegionAsSvs(
+          svs,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 40,
+          height: 40,
+          tileSize: 128,
+          matchSourceCompression: true,
+        );
+
+        final outFile = File('${tempDir.path}/out.svs');
+        await outFile.writeAsBytes(outBytes);
+        final roundTripped = await SvsFile.open(outFile.path);
+        addTearDown(roundTripped.close);
+
+        expect(roundTripped.levels.single.tileWidth, 128);
+      },
+    );
+  });
 
   test(
     'JP2K export with a non-tile-aligned crop pads boundary tiles instead '

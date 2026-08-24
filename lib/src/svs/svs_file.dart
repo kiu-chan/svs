@@ -379,6 +379,29 @@ class SvsLevel {
     return _file.readBytes(offset, byteCount);
   }
 
+  /// The exact on-disk compressed byte size of tile ([tx], [ty]) — 0 for a
+  /// sparse tile — without reading or decoding the tile itself. Useful for
+  /// estimating this level's actual compression efficiency (e.g. an
+  /// effective JPEG2000 ratio) from real tile sizes rather than assuming one.
+  Future<int> tileByteCount(int tx, int ty) async {
+    await _ensureTileTablesLoaded();
+    final tilesX = tilesAcrossX;
+    final tilesY = tilesAcrossY;
+    if (tx < 0 || tx >= tilesX || ty < 0 || ty >= tilesY) {
+      throw SvsFormatException(
+        'Tile ($tx,$ty) out of range for level $index (${tilesX}x$tilesY tiles)',
+      );
+    }
+    return _tileByteCounts![ty * tilesX + tx];
+  }
+
+  /// This level's own `ImageDescription`, unparsed — e.g.
+  /// `Aperio Image Library v11.2.1\r\n...(256x256) JPEG/RGB Q=70|AppMag = 20|...`.
+  /// Every level in a real Aperio file carries one, sized/worded for that
+  /// level's own dimensions.
+  Future<String?> get imageDescription =>
+      _ifd.readAscii(ApTag.imageDescription);
+
   /// The spliced, standalone-decodable JPEG bytes for tile ([tx], [ty]) —
   /// with an Adobe `transform=0` marker inserted first (see
   /// [forceRgbColorTransform]) when [needsYCbCrFix]. Empty for a sparse
