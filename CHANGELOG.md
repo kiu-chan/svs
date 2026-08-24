@@ -1,5 +1,17 @@
 ## 1.0.0
 
+* Fixed: with an `annotationController` attached, a two-finger pinch could
+  occasionally fail to zoom at all (`ScaleGestureRecognizer` computing
+  `scale == 1.0` despite a finger clearly moving), even in `drawMode.none`
+  where pan/zoom is supposed to work normally. `GestureDetector`'s own
+  `onTapUp` (a `TapGestureRecognizer`) and the pan/zoom `onScaleStart`/
+  `Update`/`End` (a `ScaleGestureRecognizer`) were both live for the same
+  pointer, and having the two recognizers compete in the same gesture arena
+  made the scale recognizer's own math unreliable. Tap detection no longer
+  goes through a separate `TapGestureRecognizer` at all — it's synthesized
+  from raw `Listener` pointer events instead (which don't participate in the
+  gesture arena), so there's nothing left for `ScaleGestureRecognizer` to
+  compete with.
 * `SvsFile.readInfo`, `SvsLevel.readAllTags`/`readTags`,
   `SvsAssociatedImage.readAllTags`/`readTags`: read every TIFF tag on any
   level/associated-image IFD (or just a chosen subset), decoded regardless of

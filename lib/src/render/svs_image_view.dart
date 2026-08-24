@@ -135,6 +135,14 @@ class _SvsImageViewState extends State<SvsImageView>
   Offset _gestureStartOrigin = Offset.zero;
   Offset _gestureStartFocalPoint = Offset.zero;
 
+  // Raw-pointer tap tracking — see _onPointerDown's doc comment for why tap
+  // detection is done this way instead of GestureDetector's onTapUp.
+  final Set<int> _activePointers = {};
+  int? _tapCandidatePointer;
+  Offset _tapCandidateStart = Offset.zero;
+  bool _tapCandidateMoved = false;
+  bool _tapCandidateMultiTouch = false;
+
   ui.Image? _overviewImage;
 
   @override
@@ -231,19 +239,23 @@ class _SvsImageViewState extends State<SvsImageView>
   /// The tile layer plus its pointer handling — pan/zoom via
   /// [_onScaleStart]/[_onScaleUpdate]/[_onScaleEnd] (nulled out entirely
   /// while [_isDrawingAnnotation] and not [_isDraftingRect] — see that
-  /// getter's doc comment) and, when annotating, tap routing via
-  /// [_onTapUp]. Re-evaluated on every build, including ones triggered by
+  /// getter's doc comment) and tap detection via raw pointer events (see
+  /// [_onPointerDown]'s doc comment for why, not `GestureDetector`'s own
+  /// `onTapUp`). Re-evaluated on every build, including ones triggered by
   /// [_onAnnotationChanged] when the annotation controller's `drawMode`
   /// changes.
   Widget _buildGestureLayer(Size viewportSize) {
     final suppressPanZoom = _isDrawingAnnotation && !_isDraftingRect;
     return Listener(
       onPointerSignal: _onPointerSignal,
+      onPointerDown: _onPointerDown,
+      onPointerMove: _onPointerMove,
+      onPointerUp: _onPointerUp,
+      onPointerCancel: _onPointerCancel,
       child: GestureDetector(
         onScaleStart: suppressPanZoom ? null : _onScaleStart,
         onScaleUpdate: suppressPanZoom ? null : _onScaleUpdate,
         onScaleEnd: suppressPanZoom ? null : _onScaleEnd,
-        onTapUp: widget.annotationController == null ? null : _onTapUp,
         child: CustomPaint(
           size: viewportSize,
           painter: _TilePainter(
@@ -265,7 +277,7 @@ class _SvsImageViewState extends State<SvsImageView>
   /// Whether an annotation shape is actively being drawn — while true,
   /// pan/zoom must stay fully inert. Rectangle mode already gets its own
   /// dedicated drag handling below ([_isDraftingRect]); point/polyline/
-  /// polygon mode instead places vertices via [_onTapUp], one tap at a
+  /// polygon mode instead places vertices via [_handleTap], one tap at a
   /// time — but the same [GestureDetector] would otherwise still run a
   /// `ScaleGestureRecognizer` underneath every tap (`onScaleStart`/
   /// `onScaleUpdate` fire on pointer down/move regardless of draw mode). A
@@ -273,11 +285,11 @@ class _SvsImageViewState extends State<SvsImageView>
   /// pointer-down/up events overlap enough for the recognizer to briefly see
   /// two "concurrent" pointers and compute a wild span-ratio scale from
   /// them — visible as the zoom-percent HUD jumping to a nonsensical number.
-  /// [build] nulls out `onScaleStart`/`onScaleUpdate`/`onScaleEnd` on the
-  /// `GestureDetector` outright when this is true (`GestureDetector` treats
-  /// a null callback as "don't recognize this gesture at all") — the
-  /// recognizer never starts tracking pointers in the first place, rather
-  /// than starting and having its result discarded.
+  /// [_buildGestureLayer] nulls out `onScaleStart`/`onScaleUpdate`/
+  /// `onScaleEnd` on the `GestureDetector` outright when this is true
+  /// (`GestureDetector` treats a null callback as "don't recognize this
+  /// gesture at all") — the recognizer never starts tracking pointers in the
+  /// first place, rather than starting and having its result discarded.
   bool get _isDrawingAnnotation =>
       widget.annotationController != null &&
       widget.annotationController!.drawMode != SvsAnnotationDrawMode.none;
@@ -318,10 +330,14 @@ class _SvsImageViewState extends State<SvsImageView>
     _lod.flushNow(_viewportSize!, _scale, _origin);
   }
 
-  void _onTapUp(TapUpDetails details) {
+  /// Routes a tap at [localPosition] (screen coordinates) the same way
+  /// [SvsAnnotationDrawMode] dictates for every other pointer interaction —
+  /// called from [_onPointerUp] once it's decided the just-finished gesture
+  /// really was a tap.
+  void _handleTap(Offset localPosition) {
     final controller = widget.annotationController;
     if (controller == null) return;
-    final level0Point = _toLevel0(details.localPosition);
+    final level0Point = _toLevel0(localPosition);
     switch (controller.drawMode) {
       case SvsAnnotationDrawMode.point:
         controller.commitPoint(level0Point);
@@ -338,6 +354,62 @@ class _SvsImageViewState extends State<SvsImageView>
       case SvsAnnotationDrawMode.rectangle:
         break; // handled by the drag gestures above
     }
+  }
+
+  /// Tap detection via raw pointer events instead of `GestureDetector`'s own
+  /// `onTapUp`/`TapGestureRecognizer` — deliberately. `TapGestureRecognizer`
+  /// and `ScaleGestureRecognizer` would otherwise both be live for the same
+  /// pointer in `drawMode.none` (pan/zoom stays active there, and a tap
+  /// should still select an annotation), and having them compete in the
+  /// same gesture arena makes `ScaleGestureRecognizer`'s own scale-ratio
+  /// math for a genuine two-finger pinch unreliable — confirmed empirically:
+  /// removing the competing tap recognizer alone fixed a pinch that
+  /// otherwise sometimes computed `scale == 1.0` (no zoom at all) even
+  /// though a second pointer clearly moved. `Listener`'s raw pointer
+  /// callbacks don't participate in the gesture arena at all — they fire
+  /// unconditionally alongside whatever `GestureDetector`'s own recognizers
+  /// decide — so tracking taps here sidesteps the competition entirely,
+  /// this widget's pan/zoom gestures included.
+  void _onPointerDown(PointerDownEvent event) {
+    _activePointers.add(event.pointer);
+    if (_activePointers.length == 1) {
+      _tapCandidatePointer = event.pointer;
+      _tapCandidateStart = event.localPosition;
+      _tapCandidateMoved = false;
+      _tapCandidateMultiTouch = false;
+    } else {
+      // A second (or later) pointer joined mid-gesture — definitely not a
+      // tap anymore (a pinch, most likely).
+      _tapCandidateMultiTouch = true;
+    }
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    if (event.pointer == _tapCandidatePointer &&
+        (event.localPosition - _tapCandidateStart).distance > kTouchSlop) {
+      _tapCandidateMoved = true;
+    }
+  }
+
+  void _onPointerUp(PointerUpEvent event) {
+    _activePointers.remove(event.pointer);
+    // Only counts as a tap if: it's the same pointer the candidate started
+    // with, it never moved past the slop, no other pointer ever joined, and
+    // this was the very last pointer to lift (so a two-finger gesture
+    // doesn't get treated as a tap just because one finger happened to lift
+    // without moving).
+    if (event.pointer == _tapCandidatePointer &&
+        !_tapCandidateMoved &&
+        !_tapCandidateMultiTouch &&
+        _activePointers.isEmpty) {
+      _handleTap(event.localPosition);
+    }
+    if (_activePointers.isEmpty) _tapCandidatePointer = null;
+  }
+
+  void _onPointerCancel(PointerCancelEvent event) {
+    _activePointers.remove(event.pointer);
+    if (_activePointers.isEmpty) _tapCandidatePointer = null;
   }
 
   void _onPointerSignal(PointerSignalEvent event) {

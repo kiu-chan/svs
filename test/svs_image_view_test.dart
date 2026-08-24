@@ -109,10 +109,28 @@ Future<SvsFile> _openTestFileWithThumbnail(Directory dir) async {
   return SvsFile.open(file.path);
 }
 
-Widget _wrap(Widget child) => Directionality(
-  textDirection: TextDirection.ltr,
-  child: SizedBox(width: 400, height: 400, child: child),
-);
+/// Runs [callback] with the test's actual viewport set to 400x400 logical
+/// pixels. A bare `SizedBox(width: 400, height: 400)` at the root of
+/// `pumpWidget`'s tree does *not* achieve this on its own — the root gets
+/// tight constraints matching the full test surface (800x600 by default),
+/// which a `SizedBox` can't override — so every test here that cares about
+/// the *exact* viewport size (not just a before/after comparison) needs the
+/// view itself resized, via [WidgetTester.view].
+void _testWidgets(
+  String description,
+  Future<void> Function(WidgetTester tester) callback, {
+  Timeout? timeout,
+}) {
+  testWidgets(description, (tester) async {
+    tester.view.physicalSize = const Size(400, 400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await callback(tester);
+  }, timeout: timeout);
+}
+
+Widget _wrap(Widget child) =>
+    Directionality(textDirection: TextDirection.ltr, child: child);
 
 /// Reads the zoom-percent HUD's current text (e.g. `'100%'`) — the only `%`
 /// text this widget renders.
@@ -153,7 +171,7 @@ void main() {
   });
 
   group('pan/zoom vs. annotation drawing', () {
-    testWidgets('a pinch gesture zooms the view when not drawing', (
+    _testWidgets('a pinch gesture zooms the view when not drawing', (
       tester,
     ) async {
       await tester.pumpWidget(_wrap(SvsImageView(svsFile: svs)));
@@ -167,7 +185,7 @@ void main() {
       expect(after, isNot(before));
     }, timeout: _testTimeout);
 
-    testWidgets(
+    _testWidgets(
       'the same pinch gesture leaves zoom unchanged while drawing a point annotation',
       (tester) async {
         final controller = SvsAnnotationController()
@@ -189,7 +207,7 @@ void main() {
       timeout: _testTimeout,
     );
 
-    testWidgets(
+    _testWidgets(
       'the same pinch gesture leaves zoom unchanged while drawing a polyline annotation',
       (tester) async {
         final controller = SvsAnnotationController()
@@ -211,7 +229,7 @@ void main() {
       timeout: _testTimeout,
     );
 
-    testWidgets('switching drawMode mid-session (no other rebuild in between) '
+    _testWidgets('switching drawMode mid-session (no other rebuild in between) '
         'suppresses the very next gesture', (tester) async {
       final controller = SvsAnnotationController();
       addTearDown(controller.dispose);
@@ -233,10 +251,145 @@ void main() {
       await tester.pump();
       expect(_zoomPercentText(tester), before);
     }, timeout: _testTimeout);
+
+    _testWidgets(
+      'a pinch still zooms normally with a controller attached but idle '
+      '(drawMode.none) — regression test for a real gesture-arena bug',
+      (tester) async {
+        // Previously, an annotationController being attached at all wired up
+        // GestureDetector's onTapUp (a TapGestureRecognizer) alongside
+        // onScaleStart/Update/End (a ScaleGestureRecognizer) even in
+        // drawMode.none, where pan/zoom must keep working. The two
+        // recognizers competing for the same pointer made the scale
+        // recognizer's own scale-ratio math unreliable — this exact pinch
+        // used to compute scale == 1.0 (no zoom at all) despite two fingers
+        // clearly moving apart. See _onPointerDown's doc comment for the fix
+        // (tap detection moved off GestureDetector's tap recognizer
+        // entirely, onto raw Listener pointer events).
+        final controller = SvsAnnotationController();
+        addTearDown(controller.dispose);
+
+        await tester.pumpWidget(
+          _wrap(SvsImageView(svsFile: svs, annotationController: controller)),
+        );
+        await tester.pump();
+        final before = _zoomPercentText(tester);
+
+        await _pinchOut(tester);
+        await tester.pump();
+
+        expect(_zoomPercentText(tester), isNot(before));
+      },
+      timeout: _testTimeout,
+    );
+  });
+
+  group('tap handling (drawMode.none and drawMode.point)', () {
+    // The 2000x2000 level fits exactly into the 400x400 viewport at 0.2x
+    // (see _initializeView), landing the origin at (0,0) — so screen point
+    // (sx, sy) is level-0 point (sx / 0.2, sy / 0.2).
+    const tapScreenPoint = Offset(200, 200);
+    const tappedLevel0Point = Offset(1000, 1000);
+
+    _testWidgets('a stationary tap selects the annotation under it', (
+      tester,
+    ) async {
+      final controller = SvsAnnotationController();
+      addTearDown(controller.dispose);
+      final annotation = SvsAnnotation(
+        type: SvsAnnotationShapeType.point,
+        points: const [tappedLevel0Point],
+      );
+      controller.add(annotation);
+
+      SvsAnnotation? tapped;
+      var tappedCallbackCount = 0;
+      await tester.pumpWidget(
+        _wrap(
+          SvsImageView(
+            svsFile: svs,
+            annotationController: controller,
+            onAnnotationTap: (a) {
+              tapped = a;
+              tappedCallbackCount++;
+            },
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.tapAt(tapScreenPoint);
+      await tester.pump();
+
+      expect(controller.selectedId, annotation.id);
+      expect(tapped?.id, annotation.id);
+      expect(tappedCallbackCount, 1);
+    }, timeout: _testTimeout);
+
+    _testWidgets(
+      'a tap in drawMode.point commits a new point annotation',
+      (tester) async {
+        final controller = SvsAnnotationController()
+          ..drawMode = SvsAnnotationDrawMode.point;
+        addTearDown(controller.dispose);
+
+        await tester.pumpWidget(
+          _wrap(SvsImageView(svsFile: svs, annotationController: controller)),
+        );
+        await tester.pump();
+
+        expect(controller.annotations, isEmpty);
+        await tester.tapAt(tapScreenPoint);
+        await tester.pump();
+
+        expect(controller.annotations, hasLength(1));
+        expect(
+          controller.annotations.single.type,
+          SvsAnnotationShapeType.point,
+        );
+        expect(controller.annotations.single.points.single, tappedLevel0Point);
+      },
+      timeout: _testTimeout,
+    );
+
+    _testWidgets(
+      'a two-finger gesture is never mistaken for a tap, even if one '
+      'finger lifts without moving',
+      (tester) async {
+        final controller = SvsAnnotationController();
+        addTearDown(controller.dispose);
+        final annotation = SvsAnnotation(
+          type: SvsAnnotationShapeType.point,
+          points: const [tappedLevel0Point],
+        );
+        controller.add(annotation);
+
+        await tester.pumpWidget(
+          _wrap(SvsImageView(svsFile: svs, annotationController: controller)),
+        );
+        await tester.pump();
+
+        // Pointer A stays put exactly on the annotation (would be a tap
+        // hit-testing it, if this were mistakenly treated as one); pointer
+        // B moves — a pinch. A lifts first without ever moving.
+        final pointerA = await tester.startGesture(tapScreenPoint);
+        final pointerB = await tester.startGesture(const Offset(250, 250));
+        await tester.pump(const Duration(milliseconds: 20));
+        await pointerB.moveTo(const Offset(350, 350));
+        await tester.pump(const Duration(milliseconds: 20));
+        await pointerA.up();
+        await tester.pump(const Duration(milliseconds: 20));
+        await pointerB.up();
+        await tester.pump(const Duration(milliseconds: 20));
+
+        expect(controller.selectedId, isNull);
+      },
+      timeout: _testTimeout,
+    );
   });
 
   group('display options', () {
-    testWidgets('showZoomLevel: false hides the zoom percentage', (
+    _testWidgets('showZoomLevel: false hides the zoom percentage', (
       tester,
     ) async {
       await tester.pumpWidget(
@@ -247,7 +400,7 @@ void main() {
       expect(find.textContaining('%'), findsNothing);
     }, timeout: _testTimeout);
 
-    testWidgets('showZoomLevel: true (the default) shows it', (tester) async {
+    _testWidgets('showZoomLevel: true (the default) shows it', (tester) async {
       await tester.pumpWidget(_wrap(SvsImageView(svsFile: svs)));
       await tester.pump();
 
@@ -262,7 +415,7 @@ void main() {
     // resolves in — every bit of it (fixture open, pumpWidget, and the
     // settle delay) has to happen inside one `tester.runAsync` call, not
     // just part of it, or it hangs until the test framework's own timeout.
-    testWidgets(
+    _testWidgets(
       'the minimap shows by default when a thumbnail exists',
       (tester) async {
         await tester.runAsync(() async {
@@ -278,7 +431,7 @@ void main() {
       timeout: _testTimeout,
     );
 
-    testWidgets(
+    _testWidgets(
       'showMinimap: false hides the minimap and never decodes a thumbnail',
       (tester) async {
         await tester.runAsync(() async {
