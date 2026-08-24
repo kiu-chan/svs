@@ -132,11 +132,17 @@ void _testWidgets(
 Widget _wrap(Widget child) =>
     Directionality(textDirection: TextDirection.ltr, child: child);
 
-/// Finds the zoom-percent HUD's label text (e.g. `'100%'`) — distinct from
-/// the chip's own glyph box, which separately renders a bare `'%'` `Text`.
-final Finder _zoomPercentFinder = find.byWidgetPredicate(
+/// Finds every `"N%"`-styled HUD label text — the zoom-percent chip and the
+/// whole-slide-coverage chip both render this way (distinct from either
+/// chip's own glyph box, which separately renders a bare single-character
+/// `Text`), so this matches both when `showZoomLevel` is true.
+final Finder _percentChipsFinder = find.byWidgetPredicate(
   (w) => w is Text && w.data != null && RegExp(r'^\d+%$').hasMatch(w.data!),
 );
+
+/// The zoom-percent chip specifically — the first "N%" HUD label, since it's
+/// declared (and so hit-tested/matched) before the coverage chip.
+final Finder _zoomPercentFinder = _percentChipsFinder.first;
 
 /// Reads the zoom-percent HUD's current text (e.g. `'100%'`).
 String _zoomPercentText(WidgetTester tester) =>
@@ -409,7 +415,9 @@ void main() {
       await tester.pumpWidget(_wrap(SvsImageView(svsFile: svs)));
       await tester.pump();
 
-      expect(_zoomPercentFinder, findsOneWidget);
+      // The zoom-percent chip and the whole-slide-coverage chip — no
+      // magnification chip, since this fixture has no AppMag metadata.
+      expect(_percentChipsFinder, findsNWidgets(2));
     }, timeout: _testTimeout);
 
     // Both tests below touch real file I/O beyond what `setUp` already did

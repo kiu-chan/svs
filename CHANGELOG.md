@@ -1,3 +1,13 @@
+## 1.0.3
+
+* The zoom-percentage HUD chip's tap-to-explain dialog (added in 1.0.2) is
+  removed — it added interaction surface for a detail most integrators don't
+  need explained in-app. In its place, a new chip shows how much of the
+  whole slide the viewport currently covers (100% at the initial/minimum
+  zoom, shrinking as the view zooms in) — a more broadly useful piece of
+  context than the removed dialog. The magnification chip (when the slide's
+  `AppMag` is known) is unchanged aside from also losing its tap dialog.
+
 ## 1.0.2
 
 * Fixed: a JPEG-compressed slide tile/associated image whose TIFF

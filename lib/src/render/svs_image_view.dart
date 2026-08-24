@@ -556,6 +556,7 @@ class _SvsImageViewState extends State<SvsImageView>
                   bottom: 12,
                   child: _HudOverlay(
                     scale: _scale,
+                    minScale: _minScale,
                     mppX: widget.svsFile.metadata.mppX,
                     appMag: widget.svsFile.metadata.appMag,
                     showZoomLevel: widget.showZoomLevel,
@@ -908,18 +909,17 @@ class _AnnotationPainter extends CustomPainter {
 }
 
 /// Bottom-left HUD: current zoom percentage (100% = one screen pixel per
-/// level-0 pixel), the equivalent objective magnification (when the slide's
-/// scan magnification is known), and, when the slide's microns-per-pixel is
-/// known, a physical scale bar — the zoom/magnification pair and the scale
-/// bar independently toggleable via [showZoomLevel]/[showScaleBar]. Only
-/// built at all when at least one of them is true (see the caller in
-/// [_SvsImageViewState.build]). Each of the zoom-percentage and
-/// magnification chips is tappable — it shows a short explanation of what
-/// that number means, since the two are easy to conflate (e.g. a whole-slide
-/// overview reads "1%" of native resolution but might be "0.2x", nowhere
-/// near confusingly low for an objective-magnification reading).
+/// level-0 pixel), how much of the *whole* slide the viewport currently
+/// covers (100% at the initial/minimum zoom, shrinking as the view zooms
+/// in), the equivalent objective magnification (when the slide's scan
+/// magnification is known), and, when the slide's microns-per-pixel is
+/// known, a physical scale bar — the zoom/coverage/magnification group and
+/// the scale bar independently toggleable via [showZoomLevel]/
+/// [showScaleBar]. Only built at all when at least one of them is true (see
+/// the caller in [_SvsImageViewState.build]).
 class _HudOverlay extends StatelessWidget {
   final double scale;
+  final double minScale;
   final double? mppX;
   final int? appMag;
   final bool showZoomLevel;
@@ -927,90 +927,17 @@ class _HudOverlay extends StatelessWidget {
 
   const _HudOverlay({
     required this.scale,
+    required this.minScale,
     required this.mppX,
     required this.appMag,
     required this.showZoomLevel,
     required this.showScaleBar,
   });
 
-  // Built on showGeneralDialog (widgets.dart) rather than material.dart's
-  // showDialog/AlertDialog — this package deliberately stays Material-free
-  // (see this file's imports) so it doesn't force that dependency, or a
-  // Material look, on a Cupertino-styled host app.
-  void _showInfo(BuildContext context, String title, String description) {
-    showGeneralDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: title,
-      barrierColor: const Color(0x88000000),
-      transitionDuration: const Duration(milliseconds: 150),
-      pageBuilder: (dialogContext, animation, secondaryAnimation) {
-        return Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 32),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: const Color(0xFF1C1C1E),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        color: Color(0xFFFFFFFF),
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      description,
-                      style: const TextStyle(
-                        color: Color(0xFFE0E0E0),
-                        fontSize: 13,
-                        height: 1.4,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: GestureDetector(
-                        onTap: () => Navigator.of(dialogContext).pop(),
-                        behavior: HitTestBehavior.opaque,
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          child: Text(
-                            'OK',
-                            style: TextStyle(
-                              color: Color(0xFF66B2FF),
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final zoomPercent = (scale * 100).round();
+    final coveragePercent = (minScale / scale * 100).round();
     final mag = appMag;
     final magnification = mag != null ? mag * scale : null;
     final mpp = mppX;
@@ -1041,32 +968,14 @@ class _HudOverlay extends StatelessWidget {
               if (showZoomLevel) const SizedBox(width: 12),
             ],
             if (showZoomLevel) ...[
-              _HudChip(
-                glyph: '%',
-                label: '$zoomPercent%',
-                onTap: () => _showInfo(
-                  context,
-                  'Zoom percentage',
-                  "The ratio between one screen pixel and one pixel at the slide's native scan "
-                      "resolution (level 0). 100% means you're viewing the image at the same "
-                      'resolution it was scanned at; a low percentage (e.g. a whole-slide overview) '
-                      "means you're seeing many level-0 pixels compressed into one screen pixel.",
-                ),
-              ),
+              _HudChip(glyph: '%', label: '$zoomPercent%'),
+              const SizedBox(width: 10),
+              _HudChip(glyph: 'V', label: '$coveragePercent%'),
               if (magnification != null) ...[
                 const SizedBox(width: 10),
                 _HudChip(
                   glyph: '×',
                   label: '${_formatMagnification(magnification)}x',
-                  onTap: () => _showInfo(
-                    context,
-                    'Equivalent magnification',
-                    'The microscope objective magnification this view is equivalent to, computed '
-                        "from the slide's scan magnification (AppMag = ${mag}x, from the file's own "
-                        'metadata) times the current zoom. At 100% zoom this reads ${mag}x — the same '
-                        'magnification the slide was scanned at; zoomed further out it drops below '
-                        'that, e.g. a whole-slide overview might read well under 1x.',
-                  ),
                 ),
               ],
             ],
@@ -1077,60 +986,49 @@ class _HudOverlay extends StatelessWidget {
   }
 }
 
-/// One tappable label+glyph in [_HudOverlay] — tapping shows a short
-/// explanation via [onTap] (a dialog), since a bare number like "1%" or
-/// "0.2x" isn't self-explanatory out of context. [glyph] (a single
-/// character, e.g. "%" or "×") is drawn in a bordered box rather than via
-/// `Icon`/`IconData` — this package has no `material.dart` dependency (see
-/// this file's imports) to pull the `Icons` constant set from.
+/// One label+glyph in [_HudOverlay]. [glyph] (a single character, e.g. "%"
+/// or "×") is drawn in a bordered box rather than via `Icon`/`IconData` —
+/// this package has no `material.dart` dependency (see this file's imports)
+/// to pull the `Icons` constant set from.
 class _HudChip extends StatelessWidget {
   final String glyph;
   final String label;
-  final VoidCallback onTap;
 
-  const _HudChip({
-    required this.glyph,
-    required this.label,
-    required this.onTap,
-  });
+  const _HudChip({required this.glyph, required this.label});
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 14,
-            height: 14,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              border: Border.all(color: const Color(0xFFFFFFFF), width: 1),
-              borderRadius: BorderRadius.circular(3),
-            ),
-            child: Text(
-              glyph,
-              style: const TextStyle(
-                color: Color(0xFFFFFFFF),
-                fontSize: 9,
-                fontWeight: FontWeight.bold,
-                height: 1,
-              ),
-            ),
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 14,
+          height: 14,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            border: Border.all(color: const Color(0xFFFFFFFF), width: 1),
+            borderRadius: BorderRadius.circular(3),
           ),
-          const SizedBox(width: 4),
-          Text(
-            label,
+          child: Text(
+            glyph,
             style: const TextStyle(
               color: Color(0xFFFFFFFF),
-              fontSize: 12,
+              fontSize: 9,
               fontWeight: FontWeight.bold,
+              height: 1,
             ),
           ),
-        ],
-      ),
+        ),
+        const SizedBox(width: 4),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xFFFFFFFF),
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
     );
   }
 }
