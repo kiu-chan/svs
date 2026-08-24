@@ -299,6 +299,114 @@ void main() {
   );
 
   test(
+    'compression: SvsExportCompression.jpeg2000 produces a lossless-by-default '
+    'JP2K pyramid instead of JPEG',
+    () async {
+      final file = await _buildSingleTileJpegFixture(
+        tempDir,
+        'src.svs',
+        size: 64,
+        color: (200, 100, 50),
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+
+      final outBytes = await exportSvsRegionAsSvs(
+        svs,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+        tileSize: 256,
+        compression: SvsExportCompression.jpeg2000,
+      );
+
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
+
+      expect(roundTripped.levels.single.isJp2k, isTrue);
+      expect(roundTripped.levels.single.isJpeg, isFalse);
+
+      final region = await readSvsRegion(
+        roundTripped,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+      );
+      addTearDown(region.dispose);
+      final data = await region.toByteData();
+      final pixels = data!.buffer.asUint8List();
+      // Lossless by default (jp2kCompressionRatio: 0, the default) — much
+      // tighter tolerance than the lossy-JPEG round-trip test above.
+      expect(pixels[0], closeTo(200, 2)); // R
+      expect(pixels[1], closeTo(100, 2)); // G
+      expect(pixels[2], closeTo(50, 2)); // B
+    },
+  );
+
+  test(
+    'JP2K export with a non-tile-aligned crop pads boundary tiles instead '
+    'of corrupting them',
+    () async {
+      // 300x300 with tileSize 128 -> boundary tiles in both x/y (2 full
+      // 128-col tiles + a 44-col remainder; same for rows), the case that
+      // needs the nominal-size padding — every reader in this package
+      // assumes a JP2K tile always decodes at the full nominal tile size.
+      final file = await _buildSingleTileJpegFixture(
+        tempDir,
+        'src.svs',
+        size: 300,
+        color: (10, 150, 220),
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+
+      final outBytes = await exportSvsRegionAsSvs(
+        svs,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 300,
+        height: 300,
+        tileSize: 128,
+        compression: SvsExportCompression.jpeg2000,
+      );
+
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
+
+      expect(roundTripped.levels[0].isJp2k, isTrue);
+      expect(roundTripped.levels[0].width, 300);
+      expect(roundTripped.levels[0].height, 300);
+
+      // Reads a region that only the boundary tile (tx=2, ty=2) covers —
+      // exercises the padded-tile decode path directly, not just its
+      // interior full-size neighbors.
+      final region = await readSvsRegion(
+        roundTripped,
+        level: 0,
+        x: 280,
+        y: 280,
+        width: 20,
+        height: 20,
+      );
+      addTearDown(region.dispose);
+      final data = await region.toByteData();
+      final pixels = data!.buffer.asUint8List();
+      expect(pixels[0], closeTo(10, 2));
+      expect(pixels[1], closeTo(150, 2));
+      expect(pixels[2], closeTo(220, 2));
+    },
+  );
+
+  test(
     'round-trips a crop bigger than one tile: multiple pyramid levels are generated',
     () async {
       final file = await _buildSingleTileJpegFixture(

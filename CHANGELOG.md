@@ -1,3 +1,13 @@
+## 1.1.0
+
+* `openjpeg_ffi` bumped to `^0.2.0`, and `exportSvsRegionAsSvs`/
+  `exportSvsRegionAsSvsToFile` gain a `compression` parameter
+  (`SvsExportCompression.jpeg`, the previous/default behavior, or
+  `.jpeg2000`, via that version's new `encodeJ2k`) to encode the exported
+  pyramid's tiles as JPEG2000 instead of JPEG — mathematically lossless by
+  default, or lossy at a chosen `jp2kCompressionRatio`, typically a
+  meaningfully smaller file than JPEG at comparable visual quality.
+
 ## 1.0.3
 
 * Fixed: a right/bottom-edge tile whose JPEG decode legally comes back

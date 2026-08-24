@@ -20,15 +20,30 @@ import 'dart:typed_data';
 
 import 'tiff_types.dart';
 
+/// TIFF `Compression` tag value for new-style JPEG — matches
+/// `ApCompression.newJpeg` in `svs/aperio_tags.dart`, duplicated here (not
+/// imported) per [PyramidLevelSpec]'s own doc comment on why this file
+/// avoids that dependency.
+const _newJpegCompression = 7;
+
 /// One pyramid level's dimensions/tiling, enough to plan its IFD layout —
 /// no tile pixel data needed. [imageDescription] is only meaningful (and
 /// only actually written) for level 0 — `SvsFile` only ever parses the
 /// first level's `ImageDescription` (see `SvsFile._fromTiff`).
+///
+/// [compression] is a raw TIFF `Compression` tag value — this writer only
+/// ever expects `ApCompression.newJpeg` (7) or `ApCompression.jp2k` (33005,
+/// `aperio_tags.dart`), matching the two tile encodings the caller
+/// (`render/svs_pyramid_export.dart`) can actually produce; it's an `int`
+/// rather than that enum only because this file intentionally doesn't
+/// depend on `svs/aperio_tags.dart`. Every level in one call is expected to
+/// share the same value (the caller picks one tile encoding per export).
 class PyramidLevelSpec {
   final int width;
   final int height;
   final int tileWidth;
   final int tileLength;
+  final int compression;
   final String? imageDescription;
 
   const PyramidLevelSpec({
@@ -36,6 +51,7 @@ class PyramidLevelSpec {
     required this.height,
     required this.tileWidth,
     required this.tileLength,
+    required this.compression,
     this.imageDescription,
   });
 
@@ -306,14 +322,22 @@ PyramidHeaderLayout planPyramidHeader(
         259,
         TiffType.short,
         1,
-        encodeTiffInts([7], TiffType.short, order),
-      ), // new-style JPEG
+        encodeTiffInts([level.compression], TiffType.short, order),
+      ),
       _PendingTag(
         262,
         TiffType.short,
         1,
-        encodeTiffInts([6], TiffType.short, order),
-      ), // YCbCr
+        // YCbCr for new-style JPEG (matches `img.encodeJpg`'s own output);
+        // RGB for JP2K (`encodeJ2k`'s raw-sample input/output has no
+        // separate color-transform tag to declare — see `PyramidLevelSpec`'s
+        // own doc comment on why this only ever sees these two values).
+        encodeTiffInts(
+          [level.compression == _newJpegCompression ? 6 : 2],
+          TiffType.short,
+          order,
+        ),
+      ),
       if (descBytes != null)
         _PendingTag(270, TiffType.ascii, descBytes.length, descBytes),
       _PendingTag(
