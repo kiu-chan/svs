@@ -132,10 +132,15 @@ void _testWidgets(
 Widget _wrap(Widget child) =>
     Directionality(textDirection: TextDirection.ltr, child: child);
 
-/// Reads the zoom-percent HUD's current text (e.g. `'100%'`) — the only `%`
-/// text this widget renders.
+/// Finds the zoom-percent HUD's label text (e.g. `'100%'`) — distinct from
+/// the chip's own glyph box, which separately renders a bare `'%'` `Text`.
+final Finder _zoomPercentFinder = find.byWidgetPredicate(
+  (w) => w is Text && w.data != null && RegExp(r'^\d+%$').hasMatch(w.data!),
+);
+
+/// Reads the zoom-percent HUD's current text (e.g. `'100%'`).
 String _zoomPercentText(WidgetTester tester) =>
-    tester.widget<Text>(find.textContaining('%')).data!;
+    tester.widget<Text>(_zoomPercentFinder).data!;
 
 /// The minimap is a private widget (`_Minimap`) — matched by its runtime
 /// type name since there's no public type to check against.
@@ -404,7 +409,7 @@ void main() {
       await tester.pumpWidget(_wrap(SvsImageView(svsFile: svs)));
       await tester.pump();
 
-      expect(find.textContaining('%'), findsOneWidget);
+      expect(_zoomPercentFinder, findsOneWidget);
     }, timeout: _testTimeout);
 
     // Both tests below touch real file I/O beyond what `setUp` already did

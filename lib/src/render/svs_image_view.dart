@@ -16,6 +16,20 @@ import 'image_adjustments.dart';
 import 'lod_controller.dart';
 import 'viewport_math.dart';
 
+/// How [SvsImageView] fits the level-0 image to the viewport when its
+/// aspect ratio doesn't match the slide's.
+enum SvsImageFit {
+  /// Scales down until the whole image fits inside the viewport, matching
+  /// its own aspect ratio — the mismatched dimension is left as bars of
+  /// [SvsImageView.backgroundColor] rather than cropping any of the slide.
+  contain,
+
+  /// Scales up until the image fills the viewport completely, cropping
+  /// whichever dimension overflows — no background ever shows at the
+  /// minimum zoom, at the cost of not showing the full slide at once.
+  cover,
+}
+
 /// A pannable, zoomable view of an open [SvsFile]'s resolution pyramid.
 ///
 /// Streams only the tiles needed for the current viewport/zoom level,
@@ -25,6 +39,14 @@ import 'viewport_math.dart';
 ///
 /// Does not take ownership of [svsFile]: the caller opened it and must
 /// close it, typically after this widget is disposed.
+///
+/// The initial view fits the level-0 image to the viewport per [fit]. With
+/// the default [SvsImageFit.contain], a viewport whose aspect ratio doesn't
+/// match the slide's leaves bars of [backgroundColor] on two sides (like
+/// letterboxing a video) — that's expected, not a rendering bug, and the
+/// same bars are also what shows through any spot whose tile hasn't decoded
+/// yet. Pick [SvsImageFit.cover] instead to fill the viewport completely,
+/// cropping the slide's edges at the initial (minimum) zoom.
 class SvsImageView extends StatefulWidget {
   final SvsFile svsFile;
   final TileCache? cache;
@@ -90,6 +112,19 @@ class SvsImageView extends StatefulWidget {
   /// a bar to show either way in that case.
   final bool showScaleBar;
 
+  /// How the level-0 image is fit to the viewport on open (and at the
+  /// minimum zoom thereafter). See the class doc comment for what each
+  /// value does to the viewport's aspect-ratio mismatch, if any.
+  final SvsImageFit fit;
+
+  /// Fill color for any part of the viewport not currently covered by a
+  /// decoded tile — both the letterbox/pillarbox bars [fit] can leave
+  /// outside the slide's bounds, and any in-bounds spot whose tile hasn't
+  /// decoded yet. Defaults to a neutral light gray; set it to match the
+  /// surrounding UI (e.g. the enclosing `Scaffold`'s background) so empty
+  /// space reads as "nothing here yet" rather than as slide content.
+  final Color backgroundColor;
+
   const SvsImageView({
     super.key,
     required this.svsFile,
@@ -106,6 +141,8 @@ class SvsImageView extends StatefulWidget {
     this.showMinimap = true,
     this.showZoomLevel = true,
     this.showScaleBar = true,
+    this.fit = SvsImageFit.contain,
+    this.backgroundColor = const Color(0xFFE0E0E0),
   });
 
   @override
@@ -219,10 +256,11 @@ class _SvsImageViewState extends State<SvsImageView>
 
   void _initializeView(Size viewportSize) {
     final level0 = widget.svsFile.levels.first;
-    final fitScale = math.min(
-      viewportSize.width / level0.width,
-      viewportSize.height / level0.height,
-    );
+    final scaleToFitWidth = viewportSize.width / level0.width;
+    final scaleToFitHeight = viewportSize.height / level0.height;
+    final fitScale = widget.fit == SvsImageFit.cover
+        ? math.max(scaleToFitWidth, scaleToFitHeight)
+        : math.min(scaleToFitWidth, scaleToFitHeight);
     _minScale = fitScale;
     _scale = fitScale;
     final contentWidth = viewportSize.width / _scale;
@@ -265,6 +303,7 @@ class _SvsImageViewState extends State<SvsImageView>
             origin: _origin,
             maxUpsample: widget.maxUpsample,
             adjustments: widget.adjustments,
+            backgroundColor: widget.backgroundColor,
           ),
         ),
       ),
@@ -518,6 +557,7 @@ class _SvsImageViewState extends State<SvsImageView>
                   child: _HudOverlay(
                     scale: _scale,
                     mppX: widget.svsFile.metadata.mppX,
+                    appMag: widget.svsFile.metadata.appMag,
                     showZoomLevel: widget.showZoomLevel,
                     showScaleBar: widget.showScaleBar,
                   ),
@@ -551,6 +591,7 @@ class _TilePainter extends CustomPainter {
   final Offset origin;
   final double maxUpsample;
   final SvsImageAdjustments adjustments;
+  final Color backgroundColor;
 
   _TilePainter({
     required this.svsFile,
@@ -559,6 +600,7 @@ class _TilePainter extends CustomPainter {
     required this.origin,
     required this.maxUpsample,
     required this.adjustments,
+    required this.backgroundColor,
   });
 
   // Anti-aliased edges on abutting tile rects each blend independently
@@ -574,14 +616,20 @@ class _TilePainter extends CustomPainter {
     ..filterQuality = FilterQuality.medium
     ..isAntiAlias = false
     ..colorFilter = adjustments.toColorFilter();
-  static final _placeholderPaint = Paint()
-    ..color = const Color(0xFFE0E0E0)
+
+  // Not `static`/shared: `color` varies per [backgroundColor], and different
+  // `SvsImageView`s can have different background colors at once.
+  late final _placeholderPaint = Paint()
+    ..color = backgroundColor
     ..isAntiAlias = false;
 
   @override
   void paint(Canvas canvas, Size size) {
     // Flat fallback for any spot neither this level nor the stale-level
-    // fallback below has a decoded tile for yet.
+    // fallback below has a decoded tile for yet — including, permanently,
+    // any letterbox/pillarbox bars outside the slide's own bounds when
+    // `fit` is `SvsImageFit.contain` (those spots never get a tile at all,
+    // since they fall outside every level's geometry).
     canvas.drawRect(Offset.zero & size, _placeholderPaint);
 
     final levels = svsFile.levels;
@@ -839,26 +887,100 @@ class _AnnotationPainter extends CustomPainter {
 }
 
 /// Bottom-left HUD: current zoom percentage (100% = one screen pixel per
-/// level-0 pixel) and, when the slide's microns-per-pixel is known, a
-/// physical scale bar — either half independently toggleable via
-/// [showZoomLevel]/[showScaleBar]. Only built at all when at least one of
-/// them is true (see the caller in [_SvsImageViewState.build]).
+/// level-0 pixel), the equivalent objective magnification (when the slide's
+/// scan magnification is known), and, when the slide's microns-per-pixel is
+/// known, a physical scale bar — the zoom/magnification pair and the scale
+/// bar independently toggleable via [showZoomLevel]/[showScaleBar]. Only
+/// built at all when at least one of them is true (see the caller in
+/// [_SvsImageViewState.build]). Each of the zoom-percentage and
+/// magnification chips is tappable — it shows a short explanation of what
+/// that number means, since the two are easy to conflate (e.g. a whole-slide
+/// overview reads "1%" of native resolution but might be "0.2x", nowhere
+/// near confusingly low for an objective-magnification reading).
 class _HudOverlay extends StatelessWidget {
   final double scale;
   final double? mppX;
+  final int? appMag;
   final bool showZoomLevel;
   final bool showScaleBar;
 
   const _HudOverlay({
     required this.scale,
     required this.mppX,
+    required this.appMag,
     required this.showZoomLevel,
     required this.showScaleBar,
   });
 
+  // Built on showGeneralDialog (widgets.dart) rather than material.dart's
+  // showDialog/AlertDialog — this package deliberately stays Material-free
+  // (see this file's imports) so it doesn't force that dependency, or a
+  // Material look, on a Cupertino-styled host app.
+  void _showInfo(BuildContext context, String title, String description) {
+    showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: title,
+      barrierColor: const Color(0x88000000),
+      transitionDuration: const Duration(milliseconds: 150),
+      pageBuilder: (dialogContext, animation, secondaryAnimation) {
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: const Color(0xFF1C1C1E),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        color: Color(0xFFFFFFFF),
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      description,
+                      style: const TextStyle(color: Color(0xFFE0E0E0), fontSize: 13, height: 1.4),
+                    ),
+                    const SizedBox(height: 16),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: GestureDetector(
+                        onTap: () => Navigator.of(dialogContext).pop(),
+                        behavior: HitTestBehavior.opaque,
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          child: Text(
+                            'OK',
+                            style: TextStyle(color: Color(0xFF66B2FF), fontSize: 14, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final zoomPercent = (scale * 100).round();
+    final mag = appMag;
+    final magnification = mag != null ? mag * scale : null;
     final mpp = mppX;
     final bar = (showScaleBar && mpp != null)
         ? _pickScaleBar(mpp / scale)
@@ -886,20 +1008,98 @@ class _HudOverlay extends StatelessWidget {
               ),
               if (showZoomLevel) const SizedBox(width: 12),
             ],
-            if (showZoomLevel)
-              Text(
-                '$zoomPercent%',
-                style: const TextStyle(
-                  color: Color(0xFFFFFFFF),
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
+            if (showZoomLevel) ...[
+              _HudChip(
+                glyph: '%',
+                label: '$zoomPercent%',
+                onTap: () => _showInfo(
+                  context,
+                  'Zoom percentage',
+                  "The ratio between one screen pixel and one pixel at the slide's native scan "
+                      "resolution (level 0). 100% means you're viewing the image at the same "
+                      'resolution it was scanned at; a low percentage (e.g. a whole-slide overview) '
+                      "means you're seeing many level-0 pixels compressed into one screen pixel.",
                 ),
               ),
+              if (magnification != null) ...[
+                const SizedBox(width: 10),
+                _HudChip(
+                  glyph: '×',
+                  label: '${_formatMagnification(magnification)}x',
+                  onTap: () => _showInfo(
+                    context,
+                    'Equivalent magnification',
+                    'The microscope objective magnification this view is equivalent to, computed '
+                        "from the slide's scan magnification (AppMag = ${mag}x, from the file's own "
+                        'metadata) times the current zoom. At 100% zoom this reads ${mag}x — the same '
+                        'magnification the slide was scanned at; zoomed further out it drops below '
+                        'that, e.g. a whole-slide overview might read well under 1x.',
+                  ),
+                ),
+              ],
+            ],
           ],
         ),
       ),
     );
   }
+}
+
+/// One tappable label+glyph in [_HudOverlay] — tapping shows a short
+/// explanation via [onTap] (a dialog), since a bare number like "1%" or
+/// "0.2x" isn't self-explanatory out of context. [glyph] (a single
+/// character, e.g. "%" or "×") is drawn in a bordered box rather than via
+/// `Icon`/`IconData` — this package has no `material.dart` dependency (see
+/// this file's imports) to pull the `Icons` constant set from.
+class _HudChip extends StatelessWidget {
+  final String glyph;
+  final String label;
+  final VoidCallback onTap;
+
+  const _HudChip({required this.glyph, required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 14,
+            height: 14,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              border: Border.all(color: const Color(0xFFFFFFFF), width: 1),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            child: Text(
+              glyph,
+              style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 9, fontWeight: FontWeight.bold, height: 1),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Color(0xFFFFFFFF),
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Formats an equivalent-magnification value for the HUD chip: two decimal
+/// places under 10x (where the difference between e.g. 0.17x and 0.2x
+/// matters), whole numbers at or above it (matching how objective
+/// magnifications are conventionally written, e.g. "20x" not "20.00x").
+String _formatMagnification(double value) {
+  return value < 10 ? value.toStringAsFixed(2) : value.toStringAsFixed(0);
 }
 
 class _ScaleBarPainter extends CustomPainter {
