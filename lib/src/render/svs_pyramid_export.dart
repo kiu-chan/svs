@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 
 import '../errors.dart';
+import '../svs/aperio_tags.dart';
 import '../svs/svs_file.dart';
 import '../tiff/tiff_types.dart';
 import '../tiff/tiff_writer.dart';
@@ -26,6 +27,22 @@ import 'region_decoder.dart';
 /// the same shape a real Aperio pyramid takes. [adjustments] (default
 /// [SvsImageAdjustments.none]) is applied once, to the source crop, before
 /// the pyramid is built — every generated level reflects it.
+///
+/// The exported file always gets a thumbnail (needed for `SvsImageView`'s
+/// minimap) generated from the crop itself, but two other pieces of the
+/// source file are opt-in/opt-out, since a crop is often shared outside the
+/// context that made them meaningful: [includeLabelAndMacroImages] (default
+/// `true`) copies the source file's own label/macro associated images
+/// across unmodified — they describe the whole physical slide, not just the
+/// cropped region, so a caller cropping out a small region to share might
+/// not want the slide's label riding along; pass `false` to omit them (and
+/// shrink the output). [includeSourceMetadata] (default `true`) carries
+/// every other `ImageDescription` field the source file had (Filename,
+/// Date, Time, User, ScanScope ID, etc. — anything beyond the `AppMag`/`MPP`
+/// this function always recomputes for the crop) into the exported file's
+/// own `ImageDescription`; pass `false` for just `AppMag`/`MPP`, e.g. to
+/// avoid carrying the original filename/scanner details into a
+/// redistributed crop.
 ///
 /// Built by streaming the source region band-by-band (bounded memory —
 /// roughly `tileSize * width * 4` bytes regardless of how tall the crop is,
@@ -52,6 +69,8 @@ Future<Uint8List> exportSvsRegionAsSvs(
   int quality = 90,
   int? maxPixels,
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  bool includeLabelAndMacroImages = true,
+  bool includeSourceMetadata = true,
   void Function(double progress)? onProgress,
 }) async {
   final tempDir = await Directory.systemTemp.createTemp('svs_region_export_');
@@ -69,6 +88,8 @@ Future<Uint8List> exportSvsRegionAsSvs(
       quality: quality,
       maxPixels: maxPixels,
       adjustments: adjustments,
+      includeLabelAndMacroImages: includeLabelAndMacroImages,
+      includeSourceMetadata: includeSourceMetadata,
       onProgress: onProgress,
     );
     return await tempFile.readAsBytes();
@@ -93,6 +114,8 @@ Future<File> exportSvsRegionAsSvsToFile(
   int quality = 90,
   int? maxPixels,
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  bool includeLabelAndMacroImages = true,
+  bool includeSourceMetadata = true,
   void Function(double progress)? onProgress,
 }) async {
   final file = File(path);
@@ -108,6 +131,8 @@ Future<File> exportSvsRegionAsSvsToFile(
     quality: quality,
     maxPixels: maxPixels,
     adjustments: adjustments,
+    includeLabelAndMacroImages: includeLabelAndMacroImages,
+    includeSourceMetadata: includeSourceMetadata,
     onProgress: onProgress,
   );
   return file;
@@ -125,6 +150,8 @@ Future<void> _streamSvsRegionAsSvs(
   required int quality,
   required int? maxPixels,
   required SvsImageAdjustments adjustments,
+  required bool includeLabelAndMacroImages,
+  required bool includeSourceMetadata,
   required void Function(double progress)? onProgress,
 }) async {
   if (level < 0 || level >= svsFile.levels.length) {
@@ -154,6 +181,22 @@ Future<void> _streamSvsRegionAsSvs(
   final mpp = sourceMppX == null ? null : sourceMppX * sourceLevel.downsample;
   final appMag = svsFile.metadata.appMag;
 
+  // The source file's own label/macro associated images don't change with
+  // the crop — they describe the whole physical slide — so, unless the
+  // caller opted out via `includeLabelAndMacroImages`, they're carried into
+  // the exported file unmodified (raw strip bytes copied as-is, no decode/
+  // re-encode) rather than dropped, same as a real Aperio file would have
+  // them.
+  final labelAndMacroImages = includeLabelAndMacroImages
+      ? svsFile.associatedImages
+            .where(
+              (a) =>
+                  a.kind == AssociatedImageKind.label ||
+                  a.kind == AssociatedImageKind.macro,
+            )
+            .toList(growable: false)
+      : const <SvsAssociatedImage>[];
+
   final levelDims = computePyramidLevelDims(width, height, tileSize);
   final specs = [
     for (var i = 0; i < levelDims.length; i++)
@@ -170,11 +213,36 @@ Future<void> _streamSvsRegionAsSvs(
                 quality: quality,
                 mpp: mpp,
                 appMag: appMag,
+                sourceFields: includeSourceMetadata
+                    ? svsFile.metadata.raw
+                    : const {},
               )
             : null,
       ),
   ];
-  final layout = planPyramidHeader(specs);
+  // The coarsest generated level (last in `specs`, already <= tileSize in
+  // both dimensions) doubles as the exported file's thumbnail — an
+  // associated image `SvsImageView`'s minimap needs, same as a real Aperio
+  // file carries, which a plain pyramid-levels-only export previously never
+  // wrote at all.
+  final thumbSpec = AssociatedImageSpec(
+    width: levelDims.last.$1,
+    height: levelDims.last.$2,
+    compression: ApCompression.newJpeg,
+    photometricInterpretation: 6, // YCbCr — img.encodeJpg's normal output
+    samplesPerPixel: 3,
+    bitsPerSample: const [8, 8, 8],
+    predictor: 1,
+    rowsPerStrip: levelDims.last.$2,
+    stripCount: 1,
+  );
+  final extraSpecs = [
+    for (final image in labelAndMacroImages) await _copySpec(image),
+  ];
+  final layout = planPyramidHeader(
+    specs,
+    associatedImages: [thumbSpec, ...extraSpecs],
+  );
 
   if (await outFile.exists()) await outFile.delete();
   final raf = await outFile.open(mode: FileMode.write);
@@ -221,6 +289,49 @@ Future<void> _streamSvsRegionAsSvs(
       await Future(() {});
     }
     await builders[0].finish();
+    // Captured after every level (including the coarsest, which never has a
+    // `next`) has finished — `_LevelBuilder._emitBand` only ever runs once
+    // for the coarsest level, covering its whole (already <= tileSize)
+    // extent in one band, so this is the complete thumbnail image.
+    final thumbnailImage = builders.last.finalImage!;
+    var writePos = await raf.position();
+
+    final thumbBytes = img.encodeJpg(thumbnailImage, quality: quality);
+    final thumbOffset = writePos;
+    await raf.setPosition(writePos);
+    await raf.writeFrom(thumbBytes);
+    writePos += thumbBytes.length;
+    if (writePos.isOdd) {
+      await raf.writeFrom(Uint8List(1));
+      writePos += 1;
+    }
+
+    // Each label/macro image's strips are copied byte-for-byte (no decode,
+    // no re-encode) straight from the source file.
+    final extraStripData = <(List<int>, List<int>)>[];
+    for (final source in labelAndMacroImages) {
+      final stripCount = await source.stripCount;
+      final offsets = <int>[];
+      final byteCounts = <int>[];
+      for (var i = 0; i < stripCount; i++) {
+        final bytes = await source.readRawStripBytes(i);
+        if (bytes.isEmpty) {
+          offsets.add(0);
+          byteCounts.add(0);
+          continue;
+        }
+        offsets.add(writePos);
+        byteCounts.add(bytes.length);
+        await raf.setPosition(writePos);
+        await raf.writeFrom(bytes);
+        writePos += bytes.length;
+        if (writePos.isOdd) {
+          await raf.writeFrom(Uint8List(1));
+          writePos += 1;
+        }
+      }
+      extraStripData.add((offsets, byteCounts));
+    }
 
     for (var i = 0; i < specs.length; i++) {
       final patch = layout.levels[i];
@@ -233,9 +344,44 @@ Future<void> _streamSvsRegionAsSvs(
         encodeTiffInts(sink.byteCountsPerLevel[i], TiffType.long),
       );
     }
+
+    final thumbPatch = layout.associatedImages[0];
+    await raf.setPosition(thumbPatch.stripOffsetsValuePos);
+    await raf.writeFrom(encodeTiffInts([thumbOffset], TiffType.long8));
+    await raf.setPosition(thumbPatch.stripByteCountsValuePos);
+    await raf.writeFrom(encodeTiffInts([thumbBytes.length], TiffType.long));
+
+    for (var i = 0; i < labelAndMacroImages.length; i++) {
+      final patch = layout.associatedImages[1 + i];
+      final (offsets, byteCounts) = extraStripData[i];
+      await raf.setPosition(patch.stripOffsetsValuePos);
+      await raf.writeFrom(encodeTiffInts(offsets, TiffType.long8));
+      await raf.setPosition(patch.stripByteCountsValuePos);
+      await raf.writeFrom(encodeTiffInts(byteCounts, TiffType.long));
+    }
   } finally {
     await raf.close();
   }
+}
+
+/// Builds an [AssociatedImageSpec] that lets [image]'s strips be copied
+/// byte-for-byte into the exported file — same compression/photometric/
+/// sample layout/JPEGTables/description as the source, so the copy decodes
+/// identically once reopened.
+Future<AssociatedImageSpec> _copySpec(SvsAssociatedImage image) async {
+  return AssociatedImageSpec(
+    width: image.width,
+    height: image.height,
+    compression: image.compression,
+    photometricInterpretation: image.photometricInterpretation,
+    samplesPerPixel: image.samplesPerPixel,
+    bitsPerSample: image.bitsPerSample,
+    predictor: image.predictor,
+    rowsPerStrip: await image.rowsPerStrip,
+    stripCount: await image.stripCount,
+    jpegTables: image.isJpeg ? await image.jpegTables : null,
+    imageDescription: await image.imageDescription,
+  );
 }
 
 /// Sequentially appends tile JPEG bytes to the output file (starting right
@@ -281,6 +427,14 @@ class _LevelBuilder {
   final int quality;
   final _TileSink sink;
   _LevelBuilder? next;
+
+  /// Set only on the coarsest level (the one with no [next] to cascade
+  /// into) — that level's single [_emitBand] call covers its whole extent
+  /// (already `<= tileSize` in both dimensions by construction), so this
+  /// ends up being the complete coarsest-level image once [finish] returns.
+  /// The exported file's thumbnail reuses it rather than decoding/
+  /// downsampling the source a second time.
+  img.Image? finalImage;
 
   final List<Uint8List> _pendingRows = [];
 
@@ -332,6 +486,7 @@ class _LevelBuilder {
       numChannels: 4,
       order: img.ChannelOrder.rgba,
     );
+    if (next == null) finalImage = bandImage;
     for (var tx = 0; tx < spec.tilesAcrossX; tx++) {
       final tileLeft = tx * spec.tileWidth;
       final tileW = math.min(spec.tileWidth, spec.width - tileLeft);
@@ -396,6 +551,17 @@ List<Uint8List> _boxDownsample2x(Uint8List src, int width, int height) {
 /// An Aperio-style `ImageDescription` for the cropped file's level 0 —
 /// enough for [SvsMetadata.parse] (via [SvsFile.open]) to recover [mpp] and
 /// [appMag] when the exported file is reopened.
+/// Fields from the source file's own `ImageDescription` that describe its
+/// absolute position/size within the *original* slide — meaningless (and
+/// actively misleading) once carried into a crop, so [_buildImageDescription]
+/// drops them rather than copying them through with [sourceFields].
+const _positionalMetadataFields = {
+  'Left',
+  'Top',
+  'OriginalWidth',
+  'OriginalHeight',
+};
+
 String _buildImageDescription({
   required int width,
   required int height,
@@ -403,6 +569,7 @@ String _buildImageDescription({
   required int quality,
   required double? mpp,
   required int? appMag,
+  required Map<String, String> sourceFields,
 }) {
   final header =
       'Aperio Image Library v1.0\r\n'
@@ -411,6 +578,15 @@ String _buildImageDescription({
   final fields = <String>[
     if (appMag != null) 'AppMag = $appMag',
     if (mpp != null) 'MPP = ${mpp.toStringAsFixed(4)}',
+    for (final entry in sourceFields.entries)
+      // AppMag/MPP are recomputed above (MPP scales with the source level's
+      // downsample, so the raw source value would be wrong here); every
+      // other field the source file carried — Filename, Date, Time, User,
+      // ScanScope ID, StripeWidth, DisplayColor, etc. — is preserved as-is.
+      if (entry.key != 'AppMag' &&
+          entry.key != 'MPP' &&
+          !_positionalMetadataFields.contains(entry.key))
+        '${entry.key} = ${entry.value}',
   ];
   return fields.isEmpty ? header : '$header|${fields.join('|')}';
 }

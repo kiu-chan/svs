@@ -655,16 +655,15 @@ class _TilePainter extends CustomPainter {
   }
 
   /// [level]'s full extent, converted to screen space — a right/bottom-edge
-  /// tile's *decoded* image is routinely padded up to the nominal tile size
-  /// (JPEG requires whole 8x8/16x16 blocks, so an encoder pads a partial
-  /// edge tile with extra rows/columns — typically edge-replicated pixels,
-  /// not blank ones), but [_tileScreenRect] always sizes every tile's `dst`
-  /// rect at the nominal tile size too, regardless of how much of it is real
-  /// coverage. Left unclipped, that padding — which reads as genuine, if
-  /// smeared/stretched, tissue texture rather than obviously-fake content —
-  /// paints past the level's true bottom/right edge and into what should be
-  /// empty space beyond it. Clipping every tile draw to this rect keeps
-  /// padding from ever becoming visible.
+  /// tile's *decoded* image is sometimes padded up to the nominal tile size
+  /// by the encoder (JPEG requires whole 8x8/16x16 blocks), typically with
+  /// edge-replicated pixels rather than blank ones. [_tileScreenRect] now
+  /// sizes every tile's `dst` rect from that tile's own decoded dimensions,
+  /// so an unpadded boundary tile (decoded smaller than nominal) is no
+  /// longer stretched to fill nominal-sized space — but a *padded* one still
+  /// paints its extra rows/columns past the level's true bottom/right edge.
+  /// Clipping every tile draw to this rect keeps that padding from ever
+  /// becoming visible.
   Rect _levelExtentScreenRect(SvsLevel level) => Rect.fromLTWH(
     -origin.dx * scale,
     -origin.dy * scale,
@@ -693,7 +692,7 @@ class _TilePainter extends CustomPainter {
         canvas.drawImageRect(
           image,
           src,
-          _tileScreenRect(level, tx, ty),
+          _tileScreenRect(level, tx, ty, image),
           _imagePaint,
         );
       }
@@ -737,11 +736,17 @@ class _TilePainter extends CustomPainter {
   // overlap this creates into the next tile is imperceptible.
   static const _seamGuard = 1.0;
 
-  Rect _tileScreenRect(SvsLevel level, int tx, int ty) {
+  Rect _tileScreenRect(SvsLevel level, int tx, int ty, ui.Image image) {
     final level0X = tx * level.tileWidth * level.downsample;
     final level0Y = ty * level.tileLength * level.downsample;
-    final level0Width = level.tileWidth * level.downsample;
-    final level0Height = level.tileLength * level.downsample;
+    // Sized from the tile's own decoded dimensions, not the nominal tile
+    // grid size — those only match when this tile isn't a right/bottom-edge
+    // one, or the encoder padded it up to full size. An edge tile decoded
+    // *smaller* than nominal (legal per the TIFF new-style-JPEG scheme) must
+    // keep its dst rect that same smaller size, or drawImageRect stretches
+    // its real content to fill the extra space non-uniformly.
+    final level0Width = image.width * level.downsample;
+    final level0Height = image.height * level.downsample;
     final left = (level0X - origin.dx) * scale;
     final top = (level0Y - origin.dy) * scale;
     return Rect.fromLTWH(

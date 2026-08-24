@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:svs/src/errors.dart';
+import 'package:svs/src/render/associated_image_decoder.dart';
 import 'package:svs/src/render/region_decoder.dart';
 import 'package:svs/src/render/svs_pyramid_export.dart';
 import 'package:svs/src/svs/svs_file.dart';
@@ -61,6 +62,81 @@ Future<File> _buildSingleTileJpegFixture(
 
   final file = File('${dir.path}/$name');
   await file.writeAsBytes([...header, ...tileJpeg]);
+  return file;
+}
+
+/// Same as [_buildSingleTileJpegFixture], but with a second, non-tiled IFD
+/// right after the pyramid one — a single-strip JPEG associated image
+/// classified as [AssociatedImageKind.label] (its `ImageDescription`
+/// contains "label", same as [SvsFile]'s own classifier looks for) — so
+/// `exportSvsRegionAsSvs`'s label/macro copy-through can be exercised
+/// against a real source file rather than just unit-tested in isolation.
+///
+/// Two-pass layout, extended to two out-of-line blobs (tile bytes, then
+/// label-strip bytes) laid out back-to-back right after the header, same
+/// trick as [_buildSingleTileJpegFixture]: both `TileOffsets`/`StripOffsets`
+/// are single inline values, so neither's real value changes the header's
+/// byte length.
+Future<File> _buildFixtureWithLabel(
+  Directory dir,
+  String name, {
+  required int size,
+  required (int, int, int) color,
+  required int labelSize,
+  required (int, int, int) labelColor,
+  String? imageDescription,
+}) async {
+  final tile = img.Image(width: size, height: size);
+  img.fill(tile, color: img.ColorRgb8(color.$1, color.$2, color.$3));
+  final tileJpeg = img.encodeJpg(tile, quality: 95);
+
+  final label = img.Image(width: labelSize, height: labelSize);
+  img.fill(
+    label,
+    color: img.ColorRgb8(labelColor.$1, labelColor.$2, labelColor.$3),
+  );
+  final labelJpeg = img.encodeJpg(label, quality: 95);
+
+  List<List<TestTag>> ifds(int tileOffset, int labelOffset) => [
+    [
+      TestTag.ints(256, TiffType.long, [size], Endian.little),
+      TestTag.ints(257, TiffType.long, [size], Endian.little),
+      TestTag.ints(259, TiffType.short, [7], Endian.little), // new-style JPEG
+      if (imageDescription != null) TestTag.ascii(270, imageDescription),
+      TestTag.ints(322, TiffType.long, [size], Endian.little),
+      TestTag.ints(323, TiffType.long, [size], Endian.little),
+      TestTag.ints(324, TiffType.long, [tileOffset], Endian.little),
+      TestTag.ints(325, TiffType.long, [tileJpeg.length], Endian.little),
+    ],
+    [
+      TestTag.ints(256, TiffType.long, [labelSize], Endian.little),
+      TestTag.ints(257, TiffType.long, [labelSize], Endian.little),
+      TestTag.ints(259, TiffType.short, [7], Endian.little),
+      TestTag.ints(262, TiffType.short, [6], Endian.little), // YCbCr
+      TestTag.ascii(270, 'aperio-label'),
+      TestTag.ints(273, TiffType.long, [labelOffset], Endian.little),
+      TestTag.ints(277, TiffType.short, [3], Endian.little),
+      TestTag.ints(278, TiffType.long, [labelSize], Endian.little),
+      TestTag.ints(279, TiffType.long, [labelJpeg.length], Endian.little),
+    ],
+  ];
+
+  final headerOnly = buildTiff(
+    bigTiff: false,
+    order: Endian.little,
+    ifds: ifds(0, 0),
+  );
+  final realTileOffset = headerOnly.length;
+  final realLabelOffset = realTileOffset + tileJpeg.length;
+  final header = buildTiff(
+    bigTiff: false,
+    order: Endian.little,
+    ifds: ifds(realTileOffset, realLabelOffset),
+  );
+  expect(header.length, realTileOffset);
+
+  final file = File('${dir.path}/$name');
+  await file.writeAsBytes([...header, ...tileJpeg, ...labelJpeg]);
   return file;
 }
 
@@ -273,6 +349,210 @@ void main() {
       expect(pixels[0], closeTo(10, 10));
       expect(pixels[1], closeTo(150, 10));
       expect(pixels[2], closeTo(220, 10));
+    },
+  );
+
+  test(
+    'the exported file carries a decodable thumbnail (SvsImageView\'s minimap needs one)',
+    () async {
+      final file = await _buildSingleTileJpegFixture(
+        tempDir,
+        'src.svs',
+        size: 512,
+        color: (10, 150, 220),
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+
+      final outBytes = await exportSvsRegionAsSvs(
+        svs,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 512,
+        height: 512,
+        tileSize: 256, // -> level 0 = 512x512, level 1 (coarsest) = 256x256
+      );
+
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
+
+      final thumbnails = roundTripped.associatedImages.where(
+        (a) => a.kind == AssociatedImageKind.thumbnail,
+      );
+      expect(thumbnails, hasLength(1));
+      final thumbnail = thumbnails.single;
+      // Matches the coarsest pyramid level's own dimensions — the thumbnail
+      // is that level's already-downsampled image, reused rather than
+      // re-decoded from the source.
+      expect(thumbnail.width, 256);
+      expect(thumbnail.height, 256);
+      expect(thumbnail.isDecodable, isTrue);
+
+      final decoded = await decodeAssociatedImage(thumbnail);
+      addTearDown(decoded.dispose);
+      final data = await decoded.toByteData();
+      final pixels = data!.buffer.asUint8List();
+      expect(pixels[0], closeTo(10, 10));
+      expect(pixels[1], closeTo(150, 10));
+      expect(pixels[2], closeTo(220, 10));
+    },
+  );
+
+  test(
+    'the exported file carries over the source label image and other '
+    'ImageDescription metadata, unmodified',
+    () async {
+      final file = await _buildFixtureWithLabel(
+        tempDir,
+        'src.svs',
+        size: 64,
+        color: (200, 100, 50),
+        labelSize: 32,
+        labelColor: (30, 200, 60),
+        imageDescription:
+            'Aperio Image Library v11.2.1\r\n'
+            '64x64 [0,0 64x64] (64x64) JPEG/RGB Q=30|AppMag = 20|'
+            'MPP = 0.4990|ScanScope ID = SS1234|Filename = orig.svs|'
+            'Left = 12.3|Top = 4.5|OriginalWidth = 9999|OriginalHeight = 8888',
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+      expect(
+        svs.associatedImages.single.kind,
+        AssociatedImageKind.label,
+      ); // sanity-check the fixture itself before exporting it
+
+      final outBytes = await exportSvsRegionAsSvs(
+        svs,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+        tileSize: 256,
+      );
+
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
+
+      final labels = roundTripped.associatedImages.where(
+        (a) => a.kind == AssociatedImageKind.label,
+      );
+      expect(labels, hasLength(1));
+      final label = labels.single;
+      expect(label.width, 32);
+      expect(label.height, 32);
+      expect(label.isDecodable, isTrue);
+
+      final decoded = await decodeAssociatedImage(label);
+      addTearDown(decoded.dispose);
+      final data = await decoded.toByteData();
+      final pixels = data!.buffer.asUint8List();
+      expect(pixels[0], closeTo(30, 10));
+      expect(pixels[1], closeTo(200, 10));
+      expect(pixels[2], closeTo(60, 10));
+
+      // Non-positional metadata survives verbatim...
+      expect(roundTripped.metadata.raw['ScanScope ID'], 'SS1234');
+      expect(roundTripped.metadata.raw['Filename'], 'orig.svs');
+      // ...but fields describing the source image's position/size *within
+      // the original slide* don't carry over — they'd be wrong for a crop.
+      expect(roundTripped.metadata.raw.containsKey('Left'), isFalse);
+      expect(roundTripped.metadata.raw.containsKey('Top'), isFalse);
+      expect(roundTripped.metadata.raw.containsKey('OriginalWidth'), isFalse);
+      expect(roundTripped.metadata.raw.containsKey('OriginalHeight'), isFalse);
+    },
+  );
+
+  test(
+    'includeLabelAndMacroImages: false omits the label/macro images but '
+    'keeps the thumbnail',
+    () async {
+      final file = await _buildFixtureWithLabel(
+        tempDir,
+        'src.svs',
+        size: 64,
+        color: (200, 100, 50),
+        labelSize: 32,
+        labelColor: (30, 200, 60),
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+
+      final outBytes = await exportSvsRegionAsSvs(
+        svs,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+        tileSize: 256,
+        includeLabelAndMacroImages: false,
+      );
+
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
+
+      expect(
+        roundTripped.associatedImages
+            .where((a) => a.kind == AssociatedImageKind.label),
+        isEmpty,
+      );
+      // The thumbnail (unrelated to includeLabelAndMacroImages) still shows
+      // up — it's always generated from the crop itself.
+      expect(
+        roundTripped.associatedImages
+            .where((a) => a.kind == AssociatedImageKind.thumbnail),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'includeSourceMetadata: false keeps only the recomputed AppMag/MPP',
+    () async {
+      final file = await _buildSingleTileJpegFixture(
+        tempDir,
+        'src.svs',
+        size: 64,
+        color: (200, 100, 50),
+        imageDescription:
+            'Aperio Image Library v11.2.1\r\n'
+            '64x64 [0,0 64x64] (64x64) JPEG/RGB Q=30|AppMag = 20|'
+            'MPP = 0.4990|ScanScope ID = SS1234|Filename = orig.svs',
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+
+      final outBytes = await exportSvsRegionAsSvs(
+        svs,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+        tileSize: 256,
+        includeSourceMetadata: false,
+      );
+
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
+
+      // AppMag/MPP are always recomputed for the crop, regardless of the
+      // flag — only the *rest* of the source's fields are gated by it.
+      expect(roundTripped.metadata.appMag, 20);
+      expect(roundTripped.metadata.mppX, closeTo(0.4990, 1e-6));
+      expect(roundTripped.metadata.raw.containsKey('ScanScope ID'), isFalse);
+      expect(roundTripped.metadata.raw.containsKey('Filename'), isFalse);
     },
   );
 

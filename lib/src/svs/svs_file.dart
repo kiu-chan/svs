@@ -224,6 +224,32 @@ class SvsAssociatedImage {
     return remaining < _rowsPerStrip! ? remaining : _rowsPerStrip!;
   }
 
+  /// Raw, still-compressed bytes for strip [i] exactly as stored in the
+  /// source file — no `JPEGTables` splicing, no [needsYCbCrFix] patch, no
+  /// decoding. Empty for a sparse strip (byte count 0). For a caller that
+  /// wants to copy this image byte-for-byte into a new file (see
+  /// `exportSvsRegionAsSvs` in `render/svs_pyramid_export.dart`) rather than
+  /// decode it — paired with [jpegTables] and [readTags]/[readAllTags] for
+  /// the other per-strip/per-IFD facts a faithful copy needs.
+  Future<Uint8List> readRawStripBytes(int i) async {
+    await _ensureStripTablesLoaded();
+    final byteCount = _stripByteCounts![i];
+    if (byteCount == 0) return Uint8List(0);
+    return _file.readBytes(_stripOffsets![i], byteCount);
+  }
+
+  /// This image's raw `JPEGTables` bytes (the Huffman/quantization tables
+  /// shared by every JPEG strip, spliced in by [readStripJpegBytes]), or
+  /// null if the IFD carries none. Only meaningful when [isJpeg].
+  Future<Uint8List?> get jpegTables => _loadJpegTables();
+
+  /// This image's own `ImageDescription`, unparsed — the same text
+  /// [SvsFile._classifyAssociatedImage] used to pick [kind]. A caller
+  /// copying this image into a new file (see [readRawStripBytes]) needs to
+  /// carry this forward verbatim, or a copied label/macro image would be
+  /// reclassified as a bare thumbnail on reopen.
+  Future<String?> get imageDescription => _ifd.readAscii(ApTag.imageDescription);
+
   /// Every TIFF tag on this associated image's IFD, decoded — the "full
   /// info" dump for this image. See [TiffIfd.readAllValues].
   Future<Map<int, Object>> readAllTags() => _ifd.readAllValues();

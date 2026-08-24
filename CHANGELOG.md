@@ -1,5 +1,33 @@
 ## 1.0.3
 
+* Fixed: a right/bottom-edge tile whose JPEG decode legally comes back
+  *smaller* than its pyramid level's nominal tile size (unpadded — some
+  encoders don't pad boundary tiles up to a full block) used to get stretched
+  to fill the full nominal-size destination rect anyway, distorting slide
+  content near the level's true edge; since each level's width/height leaves
+  a different remainder past its last full tile, the stretch factor — and so
+  the visible distortion — differed level to level. `SvsImageView` now sizes
+  each tile's destination rect from that tile's own decoded dimensions
+  instead of assuming every tile is nominal-sized.
+* Fixed: `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsToFile` never wrote a
+  thumbnail into the cropped `.svs` file they produced, so reopening one with
+  `SvsImageView` never showed a minimap (no associated image of
+  `AssociatedImageKind.thumbnail` for it to find). The exported file now
+  carries a thumbnail — the coarsest generated pyramid level's own image,
+  reused rather than re-decoded — same as a real Aperio file's own thumbnail.
+  The same export also now carries over the source file's label/macro
+  associated images (copied byte-for-byte, no decode/re-encode needed — they
+  describe the whole physical slide, unaffected by the crop) and every other
+  `ImageDescription` field the source carried (Filename, Date, Time, User,
+  ScanScope ID, etc. — previously only `AppMag`/`MPP` survived), excluding
+  the handful of fields (`Left`/`Top`/`OriginalWidth`/`OriginalHeight`) that
+  describe the source image's position within the *original* slide and would
+  be wrong once carried into a crop. Both are on by default but optional —
+  new `includeLabelAndMacroImages`/`includeSourceMetadata` parameters on
+  `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsToFile` (default `true` for
+  both) let a caller opt out of either, e.g. before sharing a crop outside
+  the context that made the original slide's label or scanner details
+  meaningful.
 * The zoom-percentage HUD chip's tap-to-explain dialog (added in 1.0.2) is
   removed — it added interaction surface for a detail most integrators don't
   need explained in-app. In its place, a new chip shows how much of the
