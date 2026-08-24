@@ -115,7 +115,37 @@ void main() {
     );
   });
 
-  test('refuses to export a crop over the maxPixels safety limit', () async {
+  test(
+    'refuses to export a crop over an explicitly-passed maxPixels limit',
+    () async {
+      final file = await _buildSingleTileJpegFixture(
+        tempDir,
+        'src.svs',
+        size: 64,
+        color: (200, 100, 50),
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+
+      await expectLater(
+        exportSvsRegionAsSvs(
+          svs,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 64,
+          height: 64,
+          maxPixels: 100, // 64x64 = 4096 px, well over this
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    },
+  );
+
+  test('has no pixel-count limit by default', () async {
+    // 64x64 = 4096 px would have exceeded the old default 100px test cap
+    // above, and would have exceeded the old default defaultExportMaxPixels
+    // for a big enough crop — with no maxPixels passed at all, it just works.
     final file = await _buildSingleTileJpegFixture(
       tempDir,
       'src.svs',
@@ -125,18 +155,15 @@ void main() {
     final svs = await SvsFile.open(file.path);
     addTearDown(svs.close);
 
-    await expectLater(
-      exportSvsRegionAsSvs(
-        svs,
-        level: 0,
-        x: 0,
-        y: 0,
-        width: 64,
-        height: 64,
-        maxPixels: 100, // 64x64 = 4096 px, well over this
-      ),
-      throwsA(isA<ArgumentError>()),
+    final outBytes = await exportSvsRegionAsSvs(
+      svs,
+      level: 0,
+      x: 0,
+      y: 0,
+      width: 64,
+      height: 64,
     );
+    expect(outBytes, isNotEmpty);
   });
 
   test(
@@ -248,6 +275,99 @@ void main() {
       expect(pixels[2], closeTo(220, 10));
     },
   );
+
+  test(
+    'round-trips a crop spanning several strips/tile-rows and pyramid levels',
+    () async {
+      // tileSize 128 with an 800x800 source -> level 0 needs 7 strips
+      // (128*6 + 32), well beyond the single-strip/single-flush cases the
+      // other tests exercise, plus several downsample levels beneath it.
+      final file = await _buildSingleTileJpegFixture(
+        tempDir,
+        'src.svs',
+        size: 800,
+        color: (30, 180, 90),
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+
+      final outBytes = await exportSvsRegionAsSvs(
+        svs,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 800,
+        height: 800,
+        tileSize: 128,
+      );
+
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
+
+      expect(roundTripped.levels[0].width, 800);
+      expect(roundTripped.levels[0].height, 800);
+      expect(roundTripped.levels.length, greaterThan(2));
+
+      final coarsest = roundTripped.levels.last;
+      expect(coarsest.width, lessThanOrEqualTo(128));
+      expect(coarsest.height, lessThanOrEqualTo(128));
+
+      // A solid fill should survive every level's box-filter downsample.
+      for (final lvl in roundTripped.levels) {
+        final region = await readSvsRegion(
+          roundTripped,
+          level: lvl.index,
+          x: 0,
+          y: 0,
+          width: lvl.width,
+          height: lvl.height,
+        );
+        addTearDown(region.dispose);
+        final data = await region.toByteData();
+        final pixels = data!.buffer.asUint8List();
+        expect(pixels[0], closeTo(30, 10));
+        expect(pixels[1], closeTo(180, 10));
+        expect(pixels[2], closeTo(90, 10));
+        // Bottom-right corner too, in case a strip/tile boundary got
+        // mis-stitched.
+        final lastPixel = pixels.length - 4;
+        expect(pixels[lastPixel], closeTo(30, 10));
+        expect(pixels[lastPixel + 1], closeTo(180, 10));
+        expect(pixels[lastPixel + 2], closeTo(90, 10));
+      }
+    },
+  );
+
+  test('onProgress is invoked with increasing values up to 1.0', () async {
+    final file = await _buildSingleTileJpegFixture(
+      tempDir,
+      'src.svs',
+      size: 400,
+      color: (10, 150, 220),
+    );
+    final svs = await SvsFile.open(file.path);
+    addTearDown(svs.close);
+
+    final progressValues = <double>[];
+    await exportSvsRegionAsSvs(
+      svs,
+      level: 0,
+      x: 0,
+      y: 0,
+      width: 400,
+      height: 400,
+      tileSize: 128,
+      onProgress: progressValues.add,
+    );
+
+    expect(progressValues, isNotEmpty);
+    for (var i = 1; i < progressValues.length; i++) {
+      expect(progressValues[i], greaterThan(progressValues[i - 1]));
+    }
+    expect(progressValues.last, closeTo(1.0, 1e-9));
+  });
 
   test('exportSvsRegionAsSvsToFile writes the same bytes to disk', () async {
     final file = await _buildSingleTileJpegFixture(

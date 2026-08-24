@@ -1,3 +1,22 @@
+## 1.0.1
+
+* `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsToFile`: no pixel-count limit by
+  default anymore — crop any size region, including a whole slide's full
+  extent. The old `maxPixels` safety cap existed because the previous
+  implementation decoded the entire requested region into one full-resolution
+  in-memory buffer before doing anything else; the export is now built by
+  streaming the source band-by-band straight to the output file, so memory
+  use stays bounded by `tileSize * width` rather than the full crop area.
+  `maxPixels` is still accepted (now optional, default `null`) for a caller
+  that wants to opt back into a fail-fast size budget. `exportSvsLevel`'s
+  `maxPixels` default changes the same way, for consistency, though its
+  underlying flat-raster output still needs the whole level in memory
+  regardless — prefer `exportSvsRegionAsSvsToFile` for a very large export.
+* `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsToFile`/`exportSvsRegion`/
+  `exportSvsRegionToFile`/`exportSvsLevel`/`exportSvsLevelToFile`/
+  `readSvsRegion`: new `onProgress` parameter (0.0-1.0), invoked as the
+  export/decode progresses.
+
 ## 1.0.0
 
 * Fixed: with an `annotationController` attached, a two-finger pinch could

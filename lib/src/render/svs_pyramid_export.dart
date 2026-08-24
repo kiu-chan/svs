@@ -1,17 +1,14 @@
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 
 import '../errors.dart';
 import '../svs/svs_file.dart';
-import '../tiff/tiff_types.dart' show tilesAcross;
+import '../tiff/tiff_types.dart';
 import '../tiff/tiff_writer.dart';
 import 'image_adjustments.dart';
-import 'image_export.dart' show defaultExportMaxPixels;
 import 'region_decoder.dart';
 
 /// Crops [level]'s (`x`,`y`)-`width`x`height` rectangle — see [readSvsRegion]
@@ -30,10 +27,18 @@ import 'region_decoder.dart';
 /// [SvsImageAdjustments.none]) is applied once, to the source crop, before
 /// the pyramid is built — every generated level reflects it.
 ///
-/// [maxPixels] (default [defaultExportMaxPixels]) guards the *source* crop
-/// size the same way [exportSvsLevel]'s `maxPixels` does — the whole crop is
-/// decoded and pyramid-built in memory, so an accidentally huge rectangle
-/// fails fast instead of stalling or OOM-ing the app.
+/// Built by streaming the source region band-by-band (bounded memory —
+/// roughly `tileSize * width * 4` bytes regardless of how tall the crop is,
+/// not `width * height * 4`), so there's no pixel-count safety limit by
+/// default. [maxPixels], if given, still throws [ArgumentError] up front for
+/// a crop over that size — useful if a caller wants to keep the old
+/// fail-fast behavior for a specific size budget. [onProgress] (0.0-1.0), if
+/// given, is invoked as each band of the source is processed.
+///
+/// This returns the whole encoded file as bytes, which — unlike building the
+/// file itself — *does* need that many bytes of RAM to hold the return
+/// value. For a crop large enough that this matters, prefer
+/// [exportSvsRegionAsSvsToFile], which streams straight to disk instead.
 ///
 /// Must run on the main isolate, like [readSvsRegion].
 Future<Uint8List> exportSvsRegionAsSvs(
@@ -45,197 +50,37 @@ Future<Uint8List> exportSvsRegionAsSvs(
   required int height,
   int tileSize = 256,
   int quality = 90,
-  int maxPixels = defaultExportMaxPixels,
+  int? maxPixels,
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  void Function(double progress)? onProgress,
 }) async {
-  if (level < 0 || level >= svsFile.levels.length) {
-    throw SvsFormatException(
-      'Level $level out of range (have ${svsFile.levels.length} levels)',
-    );
-  }
-  if (tileSize <= 0) {
-    throw ArgumentError.value(tileSize, 'tileSize', 'must be positive');
-  }
-  final pixelCount = width * height;
-  if (pixelCount > maxPixels) {
-    final estimatedMb = (pixelCount * 4 / (1024 * 1024)).round();
-    throw ArgumentError(
-      'Requested region is ${width}x$height ($pixelCount px), over the '
-      '$maxPixels px safety limit (~$estimatedMb MB just for the raw pixel '
-      'buffer). Crop a smaller rectangle, or raise maxPixels if you really '
-      'mean it.',
-    );
-  }
-
-  final regionImage = await readSvsRegion(
-    svsFile,
-    level: level,
-    x: x,
-    y: y,
-    width: width,
-    height: height,
-  );
-  final Uint8List pixels;
+  final tempDir = await Directory.systemTemp.createTemp('svs_region_export_');
+  final tempFile = File('${tempDir.path}/region.svs');
   try {
-    final data = await regionImage.toByteData(
-      format: ui.ImageByteFormat.rawRgba,
-    );
-    if (data == null) {
-      throw StateError(
-        'Image.toByteData returned null (the image may already be disposed)',
-      );
-    }
-    // A standalone copy, not a view over `data`'s buffer — `compute` sends
-    // it to another isolate, which can't share memory with this one.
-    pixels = Uint8List.fromList(
-      data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
-    );
-  } finally {
-    regionImage.dispose();
-  }
-
-  final sourceLevel = svsFile.levels[level];
-  final sourceMppX = svsFile.metadata.mppX;
-  final mpp = sourceMppX == null ? null : sourceMppX * sourceLevel.downsample;
-
-  // Everything from here on (adjustments, downsampling, JPEG encoding, the
-  // BigTIFF write) is pure computation on plain data — no `dart:ui`
-  // involved — so it runs on a background isolate instead of blocking
-  // whichever isolate called this (typically the main/UI isolate, since
-  // `readSvsRegion` above requires it). A large crop can mean encoding well
-  // over a thousand tiles across the whole pyramid; without this, that
-  // freezes the UI for the entire duration.
-  return compute(
-    _buildPyramidBytes,
-    _PyramidBuildParams(
-      pixels: pixels,
+    await _streamSvsRegionAsSvs(
+      svsFile,
+      outFile: tempFile,
+      level: level,
+      x: x,
+      y: y,
       width: width,
       height: height,
       tileSize: tileSize,
       quality: quality,
-      mpp: mpp,
-      appMag: svsFile.metadata.appMag,
-      brightness: adjustments.brightness,
-      contrast: adjustments.contrast,
-      shadows: adjustments.shadows,
-      highlights: adjustments.highlights,
-    ),
-  );
-}
-
-/// Everything [exportSvsRegionAsSvs] does after decoding the source region —
-/// packaged as a top-level function + a plain-data argument so [compute] can
-/// run it on a background isolate.
-class _PyramidBuildParams {
-  final Uint8List pixels;
-  final int width;
-  final int height;
-  final int tileSize;
-  final int quality;
-  final double? mpp;
-  final int? appMag;
-  final double brightness;
-  final double contrast;
-  final double shadows;
-  final double highlights;
-
-  const _PyramidBuildParams({
-    required this.pixels,
-    required this.width,
-    required this.height,
-    required this.tileSize,
-    required this.quality,
-    required this.mpp,
-    required this.appMag,
-    required this.brightness,
-    required this.contrast,
-    required this.shadows,
-    required this.highlights,
-  });
-}
-
-Uint8List _buildPyramidBytes(_PyramidBuildParams params) {
-  final adjustments = SvsImageAdjustments(
-    brightness: params.brightness,
-    contrast: params.contrast,
-    shadows: params.shadows,
-    highlights: params.highlights,
-  );
-  adjustments.applyToRgba(params.pixels);
-
-  var current = img.Image.fromBytes(
-    width: params.width,
-    height: params.height,
-    bytes: params.pixels.buffer,
-    bytesOffset: params.pixels.offsetInBytes,
-    numChannels: 4,
-    order: img.ChannelOrder.rgba,
-  );
-
-  final tileSize = params.tileSize;
-  final writerLevels = <TiffWriterLevel>[];
-  var levelIndex = 0;
-  while (true) {
-    final levelWidth = current.width;
-    final levelHeight = current.height;
-    final tilesX = tilesAcross(levelWidth, tileSize);
-    final tilesY = tilesAcross(levelHeight, tileSize);
-
-    final tileBytes = <Uint8List>[];
-    for (var ty = 0; ty < tilesY; ty++) {
-      for (var tx = 0; tx < tilesX; tx++) {
-        final tileLeft = tx * tileSize;
-        final tileTop = ty * tileSize;
-        final tileW = math.min(tileSize, levelWidth - tileLeft);
-        final tileH = math.min(tileSize, levelHeight - tileTop);
-        final tile = img.copyCrop(
-          current,
-          x: tileLeft,
-          y: tileTop,
-          width: tileW,
-          height: tileH,
-        );
-        tileBytes.add(img.encodeJpg(tile, quality: params.quality));
-      }
-    }
-
-    writerLevels.add(
-      TiffWriterLevel(
-        width: levelWidth,
-        height: levelHeight,
-        tileWidth: tileSize,
-        tileLength: tileSize,
-        imageDescription: levelIndex == 0
-            ? _buildImageDescription(
-                width: levelWidth,
-                height: levelHeight,
-                tileSize: tileSize,
-                quality: params.quality,
-                mpp: params.mpp,
-                appMag: params.appMag,
-              )
-            : null,
-        tileJpegBytes: tileBytes,
-      ),
+      maxPixels: maxPixels,
+      adjustments: adjustments,
+      onProgress: onProgress,
     );
-
-    if (levelWidth <= tileSize && levelHeight <= tileSize) break;
-    final nextWidth = math.max(1, (levelWidth / 2).ceil());
-    final nextHeight = math.max(1, (levelHeight / 2).ceil());
-    current = img.copyResize(
-      current,
-      width: nextWidth,
-      height: nextHeight,
-      interpolation: img.Interpolation.average,
-    );
-    levelIndex++;
+    return await tempFile.readAsBytes();
+  } finally {
+    await tempDir.delete(recursive: true);
   }
-
-  return writeTiledPyramidBigTiff(writerLevels);
 }
 
-/// Same as [exportSvsRegionAsSvs], but writes the encoded bytes straight to
-/// [path] instead of returning them.
+/// Same as [exportSvsRegionAsSvs], but streams the encoded file straight to
+/// [path] instead of returning it — the memory-bounded way to export a
+/// crop that's too large to comfortably hold as a single in-memory
+/// [Uint8List].
 Future<File> exportSvsRegionAsSvsToFile(
   SvsFile svsFile, {
   required String path,
@@ -246,11 +91,14 @@ Future<File> exportSvsRegionAsSvsToFile(
   required int height,
   int tileSize = 256,
   int quality = 90,
-  int maxPixels = defaultExportMaxPixels,
+  int? maxPixels,
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  void Function(double progress)? onProgress,
 }) async {
-  final bytes = await exportSvsRegionAsSvs(
+  final file = File(path);
+  await _streamSvsRegionAsSvs(
     svsFile,
+    outFile: file,
     level: level,
     x: x,
     y: y,
@@ -260,8 +108,284 @@ Future<File> exportSvsRegionAsSvsToFile(
     quality: quality,
     maxPixels: maxPixels,
     adjustments: adjustments,
+    onProgress: onProgress,
   );
-  return File(path).writeAsBytes(bytes);
+  return file;
+}
+
+Future<void> _streamSvsRegionAsSvs(
+  SvsFile svsFile, {
+  required File outFile,
+  required int level,
+  required int x,
+  required int y,
+  required int width,
+  required int height,
+  required int tileSize,
+  required int quality,
+  required int? maxPixels,
+  required SvsImageAdjustments adjustments,
+  required void Function(double progress)? onProgress,
+}) async {
+  if (level < 0 || level >= svsFile.levels.length) {
+    throw SvsFormatException(
+      'Level $level out of range (have ${svsFile.levels.length} levels)',
+    );
+  }
+  if (tileSize <= 0) {
+    throw ArgumentError.value(tileSize, 'tileSize', 'must be positive');
+  }
+  if (width <= 0 || height <= 0) {
+    throw ArgumentError('width/height must be positive, got ${width}x$height');
+  }
+  final pixelCount = width * height;
+  if (maxPixels != null && pixelCount > maxPixels) {
+    final estimatedMb = (pixelCount * 4 / (1024 * 1024)).round();
+    throw ArgumentError(
+      'Requested region is ${width}x$height ($pixelCount px), over the '
+      '$maxPixels px safety limit (~$estimatedMb MB just for the raw pixel '
+      'buffer). Crop a smaller rectangle, or pass a higher maxPixels if you '
+      'really mean it.',
+    );
+  }
+
+  final sourceLevel = svsFile.levels[level];
+  final sourceMppX = svsFile.metadata.mppX;
+  final mpp = sourceMppX == null ? null : sourceMppX * sourceLevel.downsample;
+  final appMag = svsFile.metadata.appMag;
+
+  final levelDims = computePyramidLevelDims(width, height, tileSize);
+  final specs = [
+    for (var i = 0; i < levelDims.length; i++)
+      PyramidLevelSpec(
+        width: levelDims[i].$1,
+        height: levelDims[i].$2,
+        tileWidth: tileSize,
+        tileLength: tileSize,
+        imageDescription: i == 0
+            ? _buildImageDescription(
+                width: levelDims[0].$1,
+                height: levelDims[0].$2,
+                tileSize: tileSize,
+                quality: quality,
+                mpp: mpp,
+                appMag: appMag,
+              )
+            : null,
+      ),
+  ];
+  final layout = planPyramidHeader(specs);
+
+  if (await outFile.exists()) await outFile.delete();
+  final raf = await outFile.open(mode: FileMode.write);
+  try {
+    await raf.writeFrom(layout.headerBytes);
+
+    final sink = _TileSink(raf, specs.length);
+    final builders = [
+      for (var i = 0; i < specs.length; i++)
+        _LevelBuilder(levelIndex: i, spec: specs[i], quality: quality, sink: sink),
+    ];
+    for (var i = 0; i < builders.length - 1; i++) {
+      builders[i].next = builders[i + 1];
+    }
+
+    var rowsProcessed = 0;
+    var srcY = 0;
+    while (srcY < height) {
+      final bandHeight = math.min(tileSize, height - srcY);
+      final raw = await readSvsRegionRawRgba(
+        svsFile,
+        level: level,
+        x: x,
+        y: y + srcY,
+        width: width,
+        height: bandHeight,
+      );
+      adjustments.applyToRgba(raw);
+      await builders[0].addRows([
+        for (var r = 0; r < bandHeight; r++)
+          Uint8List.sublistView(raw, r * width * 4, (r + 1) * width * 4),
+      ]);
+
+      rowsProcessed += bandHeight;
+      srcY += bandHeight;
+      onProgress?.call(rowsProcessed / height);
+      // Yield between bands so the UI (this all runs on the main isolate —
+      // tile decoding needs `dart:ui`) can still service a frame.
+      await Future(() {});
+    }
+    await builders[0].finish();
+
+    for (var i = 0; i < specs.length; i++) {
+      final patch = layout.levels[i];
+      await raf.setPosition(patch.tileOffsetsValuePos);
+      await raf.writeFrom(
+        encodeTiffInts(sink.offsetsPerLevel[i], TiffType.long8),
+      );
+      await raf.setPosition(patch.tileByteCountsValuePos);
+      await raf.writeFrom(
+        encodeTiffInts(sink.byteCountsPerLevel[i], TiffType.long),
+      );
+    }
+  } finally {
+    await raf.close();
+  }
+}
+
+/// Sequentially appends tile JPEG bytes to the output file (starting right
+/// after the header `planPyramidHeader` already wrote), recording each
+/// tile's final file offset/byte-count for the header patch pass. Tiles for
+/// a level must be written in row-major (`ty * tilesAcrossX + tx`) order —
+/// `_LevelBuilder` always emits full tile-row bands in that order, so this
+/// never needs to reorder anything.
+class _TileSink {
+  final RandomAccessFile raf;
+  final List<List<int>> offsetsPerLevel;
+  final List<List<int>> byteCountsPerLevel;
+  int _pos = -1;
+
+  _TileSink(this.raf, int levelCount)
+    : offsetsPerLevel = List.generate(levelCount, (_) => <int>[]),
+      byteCountsPerLevel = List.generate(levelCount, (_) => <int>[]);
+
+  Future<void> writeTile(int levelIndex, Uint8List bytes) async {
+    _pos = _pos < 0 ? await raf.position() : _pos;
+    offsetsPerLevel[levelIndex].add(_pos);
+    byteCountsPerLevel[levelIndex].add(bytes.length);
+    await raf.writeFrom(bytes);
+    _pos += bytes.length;
+    if (_pos.isOdd) {
+      await raf.writeFrom(Uint8List(1));
+      _pos += 1;
+    }
+  }
+}
+
+/// Builds one pyramid level by accumulating raw RGBA rows pushed in via
+/// [addRows], flushing a JPEG-encoded, file-written tile-row band as soon as
+/// [PyramidLevelSpec.tileLength] rows have accumulated (or, in [finish], the
+/// final shorter band once the source is exhausted). Each flushed band is
+/// also box-filter-downsampled 2x and pushed into [next] — the next-coarser
+/// level's own accumulator — cascading the whole pyramid from a single
+/// stream of level-0 source bands, never holding more than a couple of
+/// tile-row bands per level in memory at once.
+class _LevelBuilder {
+  final int levelIndex;
+  final PyramidLevelSpec spec;
+  final int quality;
+  final _TileSink sink;
+  _LevelBuilder? next;
+
+  final List<Uint8List> _pendingRows = [];
+
+  _LevelBuilder({
+    required this.levelIndex,
+    required this.spec,
+    required this.quality,
+    required this.sink,
+  });
+
+  Future<void> addRows(List<Uint8List> rows) async {
+    _pendingRows.addAll(rows);
+    await _flushFullBands();
+  }
+
+  Future<void> finish() async {
+    await _flushFullBands();
+    if (_pendingRows.isNotEmpty) {
+      final band = List<Uint8List>.of(_pendingRows);
+      _pendingRows.clear();
+      await _emitBand(band);
+    }
+    await next?.finish();
+  }
+
+  Future<void> _flushFullBands() async {
+    while (_pendingRows.length >= spec.tileLength) {
+      final band = _pendingRows.sublist(0, spec.tileLength);
+      _pendingRows.removeRange(0, spec.tileLength);
+      await _emitBand(band);
+    }
+  }
+
+  Future<void> _emitBand(List<Uint8List> bandRows) async {
+    final bandHeight = bandRows.length;
+    final bandBytes = Uint8List(spec.width * bandHeight * 4);
+    for (var r = 0; r < bandHeight; r++) {
+      bandBytes.setRange(
+        r * spec.width * 4,
+        (r + 1) * spec.width * 4,
+        bandRows[r],
+      );
+    }
+
+    final bandImage = img.Image.fromBytes(
+      width: spec.width,
+      height: bandHeight,
+      bytes: bandBytes.buffer,
+      numChannels: 4,
+      order: img.ChannelOrder.rgba,
+    );
+    for (var tx = 0; tx < spec.tilesAcrossX; tx++) {
+      final tileLeft = tx * spec.tileWidth;
+      final tileW = math.min(spec.tileWidth, spec.width - tileLeft);
+      final tile = img.copyCrop(
+        bandImage,
+        x: tileLeft,
+        y: 0,
+        width: tileW,
+        height: bandHeight,
+      );
+      await sink.writeTile(levelIndex, img.encodeJpg(tile, quality: quality));
+    }
+
+    if (next != null) {
+      await next!.addRows(_boxDownsample2x(bandBytes, spec.width, bandHeight));
+    }
+  }
+}
+
+/// Box-filters [src] (tightly-packed RGBA, [width]x[height]) down by 2x in
+/// both dimensions, returning the result as a list of rows (row-major, each
+/// `ceil(width / 2) * 4` bytes) rather than a flat buffer — matches
+/// [_LevelBuilder.addRows]'s input shape directly. A trailing odd row/column
+/// is averaged from just its single remaining source pixel(s), the same
+/// "round up" rule [computePyramidLevelDims] uses to size the next level.
+List<Uint8List> _boxDownsample2x(Uint8List src, int width, int height) {
+  final outWidth = (width / 2).ceil();
+  final outHeight = (height / 2).ceil();
+  final rows = <Uint8List>[];
+  for (var oy = 0; oy < outHeight; oy++) {
+    final y0 = oy * 2;
+    final hasY1 = y0 + 1 < height;
+    final row = Uint8List(outWidth * 4);
+    for (var ox = 0; ox < outWidth; ox++) {
+      final x0 = ox * 2;
+      final hasX1 = x0 + 1 < width;
+      var r = 0, g = 0, b = 0, a = 0, count = 0;
+      void accum(int xx, int yy) {
+        final idx = (yy * width + xx) * 4;
+        r += src[idx];
+        g += src[idx + 1];
+        b += src[idx + 2];
+        a += src[idx + 3];
+        count++;
+      }
+
+      accum(x0, y0);
+      if (hasX1) accum(x0 + 1, y0);
+      if (hasY1) accum(x0, y0 + 1);
+      if (hasX1 && hasY1) accum(x0 + 1, y0 + 1);
+
+      row[ox * 4] = (r / count).round();
+      row[ox * 4 + 1] = (g / count).round();
+      row[ox * 4 + 2] = (b / count).round();
+      row[ox * 4 + 3] = (a / count).round();
+    }
+    rows.add(row);
+  }
+  return rows;
 }
 
 /// An Aperio-style `ImageDescription` for the cropped file's level 0 —

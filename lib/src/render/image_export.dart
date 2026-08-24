@@ -103,6 +103,14 @@ Future<Uint8List> encodeSvsImage(
 /// one-call [readSvsRegion] + [encodeSvsImage] that disposes the
 /// intermediate decoded image for you.
 ///
+/// This produces a single flat raster, so it inherently needs a
+/// `width * height * 4`-byte buffer at some point — unlike
+/// [exportSvsRegionAsSvsToFile] (a *tiled* pyramidal `.svs` file), that
+/// floor can't be streamed away. For a crop large enough that this matters,
+/// prefer that function instead, if a tiled slide file is an acceptable
+/// output shape. [onProgress] (0.0-1.0), if given, is invoked as each source
+/// tile is composited into the result.
+///
 /// Must run on the main isolate, like [readSvsRegion].
 Future<Uint8List> exportSvsRegion(
   SvsFile svsFile, {
@@ -114,6 +122,7 @@ Future<Uint8List> exportSvsRegion(
   required SvsImageFormat format,
   int quality = 92,
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  void Function(double progress)? onProgress,
 }) async {
   final image = await readSvsRegion(
     svsFile,
@@ -122,6 +131,7 @@ Future<Uint8List> exportSvsRegion(
     y: y,
     width: width,
     height: height,
+    onProgress: onProgress,
   );
   try {
     return await encodeSvsImage(
@@ -148,6 +158,7 @@ Future<File> exportSvsRegionToFile(
   required SvsImageFormat format,
   int quality = 92,
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  void Function(double progress)? onProgress,
 }) async {
   final bytes = await exportSvsRegion(
     svsFile,
@@ -159,6 +170,7 @@ Future<File> exportSvsRegionToFile(
     format: format,
     quality: quality,
     adjustments: adjustments,
+    onProgress: onProgress,
   );
   return File(path).writeAsBytes(bytes);
 }
@@ -205,7 +217,8 @@ Future<File> exportAssociatedImageToFile(
   return File(path).writeAsBytes(bytes);
 }
 
-/// Default for [exportSvsLevel]'s `maxPixels` guard: 8000x8000, roughly a
+/// Convenience value for [exportSvsLevel]'s `maxPixels`, for a caller that
+/// wants to opt back into the old fail-fast behavior: 8000x8000, roughly a
 /// 256MB raw RGBA buffer.
 const defaultExportMaxPixels = 64000000;
 
@@ -215,12 +228,13 @@ const defaultExportMaxPixels = 64000000;
 /// decoding and encoding that whole level allocates 4 bytes/pixel *twice*
 /// (once compositing the tiles, once again inside the format encoder)
 /// before a single output byte exists, easily gigabytes of RAM and a
-/// multi-minute encode. [maxPixels] (default [defaultExportMaxPixels])
-/// throws [ArgumentError] before attempting anything larger than that, so
-/// this fails fast instead of stalling or OOM-ing the app — pass a bigger
-/// value only once you've deliberately sized for it. Prefer
+/// multi-minute encode. There's no size limit by default; pass [maxPixels]
+/// (e.g. [defaultExportMaxPixels]) to throw [ArgumentError] up front instead
+/// of attempting an export over a size you've budgeted for. Prefer
 /// [exportSvsRegion] for a specific rectangle, or a coarser (higher-index,
-/// smaller) level, when you don't actually need the full-resolution export.
+/// smaller) level, when you don't actually need the full-resolution export
+/// — or [exportSvsRegionAsSvsToFile] for a very large export, which streams
+/// instead of needing the whole level in memory.
 ///
 /// Must run on the main isolate, like [readSvsRegion].
 Future<Uint8List> exportSvsLevel(
@@ -228,8 +242,9 @@ Future<Uint8List> exportSvsLevel(
   required int level,
   required SvsImageFormat format,
   int quality = 92,
-  int maxPixels = defaultExportMaxPixels,
+  int? maxPixels,
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  void Function(double progress)? onProgress,
 }) async {
   if (level < 0 || level >= svsFile.levels.length) {
     throw SvsFormatException(
@@ -238,7 +253,7 @@ Future<Uint8List> exportSvsLevel(
   }
   final lvl = svsFile.levels[level];
   final pixelCount = lvl.width * lvl.height;
-  if (pixelCount > maxPixels) {
+  if (maxPixels != null && pixelCount > maxPixels) {
     final estimatedMb = (pixelCount * 4 / (1024 * 1024)).round();
     throw ArgumentError(
       'Level $level is ${lvl.width}x${lvl.height} ($pixelCount px), over '
@@ -258,6 +273,7 @@ Future<Uint8List> exportSvsLevel(
     format: format,
     quality: quality,
     adjustments: adjustments,
+    onProgress: onProgress,
   );
 }
 
@@ -269,8 +285,9 @@ Future<File> exportSvsLevelToFile(
   required int level,
   required SvsImageFormat format,
   int quality = 92,
-  int maxPixels = defaultExportMaxPixels,
+  int? maxPixels,
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  void Function(double progress)? onProgress,
 }) async {
   final bytes = await exportSvsLevel(
     svsFile,
@@ -279,6 +296,7 @@ Future<File> exportSvsLevelToFile(
     quality: quality,
     maxPixels: maxPixels,
     adjustments: adjustments,
+    onProgress: onProgress,
   );
   return File(path).writeAsBytes(bytes);
 }

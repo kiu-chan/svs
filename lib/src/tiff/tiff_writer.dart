@@ -1,46 +1,86 @@
-// A purpose-built (not generic) tiled-BigTIFF writer: emits exactly the tag
-// set `svs_file.dart`'s reader already understands for a pyramid level
-// (ImageWidth/ImageLength/BitsPerSample/Compression/
+// A purpose-built (not generic) tiled-BigTIFF *header* writer: lays out
+// exactly the tag set `svs_file.dart`'s reader already understands for a
+// pyramid level (ImageWidth/ImageLength/BitsPerSample/Compression/
 // PhotometricInterpretation/[ImageDescription]/SamplesPerPixel/TileWidth/
 // TileLength/TileOffsets/TileByteCounts), with every tile already encoded as
 // a standalone JPEG (no shared JPEGTables — `spliceJpegTile` already treats
-// tiles without one as self-contained). Internal to this package: the public
-// entry point is `render/svs_pyramid_export.dart`.
+// tiles without one as self-contained).
+//
+// Unlike a typical TIFF writer, this doesn't take tile bytes up front: tile
+// data for a large crop is produced by a streaming cascade (see
+// `render/svs_pyramid_export.dart`) that can't afford to hold every level's
+// worth of encoded tiles in memory at once. So the header/IFD layout —
+// which only depends on level *dimensions*, not tile *contents* — is
+// planned first (`planPyramidHeader`), and the caller streams tile bytes to
+// the file after it, then comes back to patch in the real TileOffsets/
+// TileByteCounts values once they're known (`PyramidLevelPatch`). Internal
+// to this package: the public entry point is `render/svs_pyramid_export.dart`.
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'tiff_types.dart';
 
-/// One pyramid level's worth of already-encoded tile JPEG bytes, row-major
-/// (`tileJpegBytes[ty * tilesAcrossX + tx]`). [imageDescription] is only
-/// meaningful (and only actually written) for level 0 — `SvsFile` only ever
-/// parses the first level's `ImageDescription` (see `SvsFile._fromTiff`).
-class TiffWriterLevel {
+/// One pyramid level's dimensions/tiling, enough to plan its IFD layout —
+/// no tile pixel data needed. [imageDescription] is only meaningful (and
+/// only actually written) for level 0 — `SvsFile` only ever parses the
+/// first level's `ImageDescription` (see `SvsFile._fromTiff`).
+class PyramidLevelSpec {
   final int width;
   final int height;
   final int tileWidth;
   final int tileLength;
   final String? imageDescription;
-  final List<Uint8List> tileJpegBytes;
 
-  const TiffWriterLevel({
+  const PyramidLevelSpec({
     required this.width,
     required this.height,
     required this.tileWidth,
     required this.tileLength,
-    required this.tileJpegBytes,
     this.imageDescription,
   });
 
   int get tilesAcrossX => tilesAcross(width, tileWidth);
   int get tilesAcrossY => tilesAcross(height, tileLength);
+  int get tileCount => tilesAcrossX * tilesAcrossY;
+}
+
+/// Where, once a level's real tile offsets/byte-counts are known, to seek
+/// back and write them — [tileOffsetsValuePos]/[tileByteCountsValuePos] are
+/// absolute file positions, valid whether that tag's value ended up inline
+/// in its IFD entry or in an out-of-line blob (both are just "a position to
+/// write bytes at").
+class PyramidLevelPatch {
+  final int tileOffsetsValuePos;
+  final int tileByteCountsValuePos;
+  final int tileCount;
+
+  const PyramidLevelPatch({
+    required this.tileOffsetsValuePos,
+    required this.tileByteCountsValuePos,
+    required this.tileCount,
+  });
+}
+
+/// Result of [planPyramidHeader]: the header bytes (header + every level's
+/// IFD, chained via next-IFD offsets, with TileOffsets/TileByteCounts left
+/// zero-filled) plus each level's patch positions, in the same order as the
+/// input `levels`.
+class PyramidHeaderLayout {
+  final Uint8List headerBytes;
+  final List<PyramidLevelPatch> levels;
+
+  const PyramidHeaderLayout(this.headerBytes, this.levels);
+
+  /// File position immediately after the header — where tile data streaming
+  /// should begin.
+  int get tileDataStart => headerBytes.length;
 }
 
 /// One IFD tag entry pending layout: [count]/[type] are always known up
 /// front (needed to compute byte layout before any value is final), but
-/// [encodedValue] is null for `TileOffsets` (324) — its value depends on
-/// where this level's tile data lands, which is only known once layout is
-/// complete, so it's filled in during the write pass instead.
+/// [encodedValue] is null for `TileOffsets` (324) and `TileByteCounts`
+/// (325) — their real values are only known once tile streaming finishes,
+/// so their space is reserved (zero-filled) here and patched later.
 class _PendingTag {
   final int id;
   final int type;
@@ -52,22 +92,16 @@ class _PendingTag {
   int get totalBytes => count * tiffTypeSize(type);
 }
 
-class _LevelPlan {
+class _LevelHeaderPlan {
   final List<_PendingTag> tags;
-  final List<int?>
-  blobOffsets; // per tag: null = inline, else out-of-line offset
-  final List<int> tileDataOffsets; // per tile
-  final List<Uint8List> tileJpegBytes;
+  final List<int?> blobOffsets; // per tag: null = inline, else out-of-line
 
-  const _LevelPlan({
-    required this.tags,
-    required this.blobOffsets,
-    required this.tileDataOffsets,
-    required this.tileJpegBytes,
-  });
+  const _LevelHeaderPlan({required this.tags, required this.blobOffsets});
 }
 
-Uint8List _encodeInts(List<int> values, int type, Endian order) {
+/// Encodes [values] as [type]'s on-disk byte representation — `SHORT`,
+/// `LONG`, or `LONG8` only (the only integer tag types this writer needs).
+Uint8List encodeTiffInts(List<int> values, int type, [Endian order = Endian.little]) {
   final size = tiffTypeSize(type);
   final bytes = Uint8List(size * values.length);
   final data = ByteData.sublistView(bytes);
@@ -81,21 +115,66 @@ Uint8List _encodeInts(List<int> values, int type, Endian order) {
       case TiffType.long8:
         data.setUint64(o, values[i], order);
       default:
-        throw UnsupportedError('_encodeInts does not support type $type');
+        throw UnsupportedError('encodeTiffInts does not support type $type');
     }
   }
   return bytes;
 }
 
-/// Writes [levels] (level 0 = full resolution, each next one progressively
-/// downsampled — order matters, it's the order IFDs are chained in) as a
-/// single BigTIFF file: a header, one tiled IFD per level (chained via
-/// next-IFD offsets), and every level's tile JPEG bytes.
+/// Pure geometry: the width/height of every pyramid level generated from a
+/// [width]x[height] source, each next level roughly half the previous, down
+/// to one that fits in a single [tileSize]x[tileSize] tile.
 ///
-/// Always BigTIFF (64-bit offsets) — simpler than picking classic vs. Big
-/// per file, and this package's own reader (`TiffFile`) already handles
-/// both, so there's no compatibility reason to prefer classic TIFF here.
-Uint8List writeTiledPyramidBigTiff(List<TiffWriterLevel> levels) {
+/// Height uses a *chunked* halving (as if the source arrived in bands of
+/// exactly [tileSize] rows, with the halving rounded per band rather than
+/// once over the whole level) rather than a single `ceil(height / 2)` —
+/// because that's exactly what the streaming pyramid builder actually does
+/// (see `svs_pyramid_export.dart`'s `_LevelBuilder`, which only ever
+/// downsamples fully-accumulated [tileSize]-row bands, plus one shorter
+/// final band). The two formulas agree whenever [tileSize] is even (the
+/// common case — default 256), but only the chunked one is correct in
+/// general, so the streamed cascade's actual output height always matches
+/// what's declared in the file header. Width isn't chunked (each band spans
+/// the level's full width), so it keeps the simple `ceil(width / 2)`.
+List<(int, int)> computePyramidLevelDims(int width, int height, int tileSize) {
+  final dims = <(int, int)>[];
+  var w = width;
+  var h = height;
+  while (true) {
+    dims.add((w, h));
+    if (w <= tileSize && h <= tileSize) break;
+    final nextW = w <= 1 ? 1 : (w / 2).ceil();
+    final nextH = h <= 1 ? 1 : _chunkedHalve(h, tileSize);
+    w = nextW;
+    h = nextH;
+  }
+  return dims;
+}
+
+int _chunkedHalve(int length, int chunk) {
+  if (length <= chunk) return (length / 2).ceil();
+  final fullChunks = length ~/ chunk;
+  final remainder = length % chunk;
+  final halfChunk = (chunk / 2).ceil();
+  return fullChunks * halfChunk + (remainder > 0 ? (remainder / 2).ceil() : 0);
+}
+
+/// Plans the header/IFD region of a tiled pyramid BigTIFF for [levels]
+/// (level 0 = full resolution, each next one progressively downsampled —
+/// order matters, it's the order IFDs are chained in), without needing any
+/// tile pixel data yet. Always BigTIFF (64-bit offsets) — simpler than
+/// picking classic vs. Big per file, and this package's own reader
+/// (`TiffFile`) already handles both, so there's no compatibility reason to
+/// prefer classic TIFF here.
+///
+/// The caller is expected to: write [PyramidHeaderLayout.headerBytes] at the
+/// start of the output file, then stream each level's tile JPEG bytes
+/// starting at [PyramidHeaderLayout.tileDataStart] (sequential appends, tile
+/// order matching `tilesAcrossX`/`tilesAcrossY`'s row-major order), and
+/// finally seek back to each [PyramidLevelPatch]'s positions and write the
+/// real offsets/byte-counts (via [encodeTiffInts] with [TiffType.long8]/
+/// [TiffType.long] respectively).
+PyramidHeaderLayout planPyramidHeader(List<PyramidLevelSpec> levels) {
   const order = Endian.little;
   const headerSize = 16;
   const dirCountFieldSize = 8;
@@ -103,21 +182,11 @@ Uint8List writeTiledPyramidBigTiff(List<TiffWriterLevel> levels) {
   const valueFieldSize = 8;
 
   final ifdOffsets = <int>[];
-  final levelPlans = <_LevelPlan>[];
+  final levelPlans = <_LevelHeaderPlan>[];
   var pos = headerSize;
 
   for (final level in levels) {
-    final tilesX = level.tilesAcrossX;
-    final tilesY = level.tilesAcrossY;
-    final tileCount = tilesX * tilesY;
-    if (level.tileJpegBytes.length != tileCount) {
-      throw ArgumentError(
-        'Level ${level.width}x${level.height}: expected $tileCount tiles '
-        '(${tilesX}x$tilesY), got ${level.tileJpegBytes.length}',
-      );
-    }
-
-    final byteCounts = [for (final b in level.tileJpegBytes) b.length];
+    final tileCount = level.tileCount;
     final descBytes = level.imageDescription == null
         ? null
         : Uint8List.fromList([...utf8.encode(level.imageDescription!), 0]);
@@ -127,31 +196,31 @@ Uint8List writeTiledPyramidBigTiff(List<TiffWriterLevel> levels) {
         256,
         TiffType.long,
         1,
-        _encodeInts([level.width], TiffType.long, order),
+        encodeTiffInts([level.width], TiffType.long, order),
       ),
       _PendingTag(
         257,
         TiffType.long,
         1,
-        _encodeInts([level.height], TiffType.long, order),
+        encodeTiffInts([level.height], TiffType.long, order),
       ),
       _PendingTag(
         258,
         TiffType.short,
         3,
-        _encodeInts([8, 8, 8], TiffType.short, order),
+        encodeTiffInts([8, 8, 8], TiffType.short, order),
       ),
       _PendingTag(
         259,
         TiffType.short,
         1,
-        _encodeInts([7], TiffType.short, order),
+        encodeTiffInts([7], TiffType.short, order),
       ), // new-style JPEG
       _PendingTag(
         262,
         TiffType.short,
         1,
-        _encodeInts([6], TiffType.short, order),
+        encodeTiffInts([6], TiffType.short, order),
       ), // YCbCr
       if (descBytes != null)
         _PendingTag(270, TiffType.ascii, descBytes.length, descBytes),
@@ -159,32 +228,22 @@ Uint8List writeTiledPyramidBigTiff(List<TiffWriterLevel> levels) {
         277,
         TiffType.short,
         1,
-        _encodeInts([3], TiffType.short, order),
+        encodeTiffInts([3], TiffType.short, order),
       ),
       _PendingTag(
         322,
         TiffType.long,
         1,
-        _encodeInts([level.tileWidth], TiffType.long, order),
+        encodeTiffInts([level.tileWidth], TiffType.long, order),
       ),
       _PendingTag(
         323,
         TiffType.long,
         1,
-        _encodeInts([level.tileLength], TiffType.long, order),
+        encodeTiffInts([level.tileLength], TiffType.long, order),
       ),
-      _PendingTag(
-        324,
-        TiffType.long8,
-        tileCount,
-        null,
-      ), // TileOffsets: filled at write time
-      _PendingTag(
-        325,
-        TiffType.long,
-        tileCount,
-        _encodeInts(byteCounts, TiffType.long, order),
-      ),
+      _PendingTag(324, TiffType.long8, tileCount, null), // TileOffsets
+      _PendingTag(325, TiffType.long, tileCount, null), // TileByteCounts
     ];
 
     ifdOffsets.add(pos);
@@ -201,21 +260,7 @@ Uint8List writeTiledPyramidBigTiff(List<TiffWriterLevel> levels) {
       }
     }
 
-    final tileDataOffsets = <int>[];
-    for (final bytes in level.tileJpegBytes) {
-      tileDataOffsets.add(pos);
-      pos += bytes.length;
-      if (pos.isOdd) pos += 1;
-    }
-
-    levelPlans.add(
-      _LevelPlan(
-        tags: tags,
-        blobOffsets: blobOffsets,
-        tileDataOffsets: tileDataOffsets,
-        tileJpegBytes: level.tileJpegBytes,
-      ),
-    );
+    levelPlans.add(_LevelHeaderPlan(tags: tags, blobOffsets: blobOffsets));
   }
 
   final out = Uint8List(pos);
@@ -228,32 +273,43 @@ Uint8List writeTiledPyramidBigTiff(List<TiffWriterLevel> levels) {
   data.setUint16(6, 0, order); // reserved
   data.setUint64(8, levels.isEmpty ? 0 : ifdOffsets[0], order);
 
+  final patches = <PyramidLevelPatch>[];
   for (var i = 0; i < levels.length; i++) {
     final plan = levelPlans[i];
     final ifdBase = ifdOffsets[i];
     data.setUint64(ifdBase, plan.tags.length, order);
 
     var entryPos = ifdBase + dirCountFieldSize;
+    int? tileOffsetsValuePos;
+    int? tileByteCountsValuePos;
     for (var j = 0; j < plan.tags.length; j++) {
       final tag = plan.tags[j];
       data.setUint16(entryPos, tag.id, order);
       data.setUint16(entryPos + 2, tag.type, order);
       data.setUint64(entryPos + 4, tag.count, order);
 
-      final valueBytes = tag.id == 324
-          ? _encodeInts(plan.tileDataOffsets, TiffType.long8, order)
-          : tag.encodedValue!;
-
       final blobOffset = plan.blobOffsets[j];
+      final valuePos = blobOffset ?? (entryPos + 12);
+      if (tag.id == 324) tileOffsetsValuePos = valuePos;
+      if (tag.id == 325) tileByteCountsValuePos = valuePos;
+
       if (blobOffset == null) {
-        out.setRange(
-          entryPos + 12,
-          entryPos + 12 + valueBytes.length,
-          valueBytes,
-        );
+        if (tag.encodedValue != null) {
+          out.setRange(
+            entryPos + 12,
+            entryPos + 12 + tag.encodedValue!.length,
+            tag.encodedValue!,
+          );
+        }
       } else {
         data.setUint64(entryPos + 12, blobOffset, order);
-        out.setRange(blobOffset, blobOffset + valueBytes.length, valueBytes);
+        if (tag.encodedValue != null) {
+          out.setRange(
+            blobOffset,
+            blobOffset + tag.encodedValue!.length,
+            tag.encodedValue!,
+          );
+        }
       }
       entryPos += entrySize;
     }
@@ -261,15 +317,14 @@ Uint8List writeTiledPyramidBigTiff(List<TiffWriterLevel> levels) {
     final nextIfdOffset = i + 1 < levels.length ? ifdOffsets[i + 1] : 0;
     data.setUint64(entryPos, nextIfdOffset, order);
 
-    for (var t = 0; t < plan.tileJpegBytes.length; t++) {
-      final bytes = plan.tileJpegBytes[t];
-      out.setRange(
-        plan.tileDataOffsets[t],
-        plan.tileDataOffsets[t] + bytes.length,
-        bytes,
-      );
-    }
+    patches.add(
+      PyramidLevelPatch(
+        tileOffsetsValuePos: tileOffsetsValuePos!,
+        tileByteCountsValuePos: tileByteCountsValuePos!,
+        tileCount: levels[i].tileCount,
+      ),
+    );
   }
 
-  return out;
+  return PyramidHeaderLayout(out, patches);
 }

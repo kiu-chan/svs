@@ -17,6 +17,9 @@ import 'ycbcr_fix.dart';
 /// transparent. Throws [ArgumentError] if the rectangle doesn't overlap the
 /// level at all, or if [width]/[height] isn't positive.
 ///
+/// [onProgress] (0.0-1.0), if given, is invoked as each overlapping tile is
+/// composited into the result.
+///
 /// Must run on the main isolate, like any other `dart:ui` decode (JPEG tiles
 /// go through `dart:ui`'s image codec, which only works there).
 Future<ui.Image> readSvsRegion(
@@ -26,6 +29,45 @@ Future<ui.Image> readSvsRegion(
   required int y,
   required int width,
   required int height,
+  void Function(double progress)? onProgress,
+}) async {
+  final outPixels = await readSvsRegionRawRgba(
+    svsFile,
+    level: level,
+    x: x,
+    y: y,
+    width: width,
+    height: height,
+    onProgress: onProgress,
+  );
+
+  final completer = Completer<ui.Image>();
+  ui.decodeImageFromPixels(
+    outPixels,
+    width,
+    height,
+    ui.PixelFormat.rgba8888,
+    completer.complete,
+  );
+  return completer.future;
+}
+
+/// Same crop as [readSvsRegion], but returns tightly-packed RGBA8888 bytes
+/// (row-major, stride [width] pixels) instead of a decoded [ui.Image] — lets
+/// a caller assemble a large region band-by-band (see the streaming pyramid
+/// builder in `svs_pyramid_export.dart`) without paying for a `dart:ui`
+/// image round-trip per band.
+///
+/// Same coordinate semantics, out-of-bounds handling, and error behavior as
+/// [readSvsRegion]. Must run on the main isolate, for the same reason.
+Future<Uint8List> readSvsRegionRawRgba(
+  SvsFile svsFile, {
+  required int level,
+  required int x,
+  required int y,
+  required int width,
+  required int height,
+  void Function(double progress)? onProgress,
 }) async {
   if (level < 0 || level >= svsFile.levels.length) {
     throw SvsFormatException(
@@ -54,49 +96,45 @@ Future<ui.Image> readSvsRegion(
   final lastTx = (validRight - 1) ~/ lvl.tileWidth;
   final firstTy = validTop ~/ lvl.tileLength;
   final lastTy = (validBottom - 1) ~/ lvl.tileLength;
+  final totalTiles = (lastTx - firstTx + 1) * (lastTy - firstTy + 1);
+  var tilesDone = 0;
 
   for (var ty = firstTy; ty <= lastTy; ty++) {
     for (var tx = firstTx; tx <= lastTx; tx++) {
       final tile = await _decodeTileRgba(lvl, tx, ty);
-      if (tile == null) continue; // sparse tile -> left transparent
-
-      final plan = planTileBlit(
-        clipLeft: validLeft,
-        clipTop: validTop,
-        clipRight: validRight,
-        clipBottom: validBottom,
-        tileLeft: tx * lvl.tileWidth,
-        tileTop: ty * lvl.tileLength,
-        tileWidth: tile.width,
-        tileHeight: tile.height,
-        dstOriginX: x,
-        dstOriginY: y,
-        dstStride: width,
-      );
-      if (plan == null) continue;
-
-      for (var row = 0; row < plan.rowCount; row++) {
-        final srcStart = (plan.srcFirstIndex + row * plan.srcStride) * 4;
-        final dstStart = (plan.dstFirstIndex + row * plan.dstStride) * 4;
-        outPixels.setRange(
-          dstStart,
-          dstStart + plan.colCount * 4,
-          tile.bytes,
-          srcStart,
+      if (tile != null) {
+        final plan = planTileBlit(
+          clipLeft: validLeft,
+          clipTop: validTop,
+          clipRight: validRight,
+          clipBottom: validBottom,
+          tileLeft: tx * lvl.tileWidth,
+          tileTop: ty * lvl.tileLength,
+          tileWidth: tile.width,
+          tileHeight: tile.height,
+          dstOriginX: x,
+          dstOriginY: y,
+          dstStride: width,
         );
+        if (plan != null) {
+          for (var row = 0; row < plan.rowCount; row++) {
+            final srcStart = (plan.srcFirstIndex + row * plan.srcStride) * 4;
+            final dstStart = (plan.dstFirstIndex + row * plan.dstStride) * 4;
+            outPixels.setRange(
+              dstStart,
+              dstStart + plan.colCount * 4,
+              tile.bytes,
+              srcStart,
+            );
+          }
+        }
       }
+      tilesDone++;
+      onProgress?.call(tilesDone / totalTiles);
     }
   }
 
-  final completer = Completer<ui.Image>();
-  ui.decodeImageFromPixels(
-    outPixels,
-    width,
-    height,
-    ui.PixelFormat.rgba8888,
-    completer.complete,
-  );
-  return completer.future;
+  return outPixels;
 }
 
 class _DecodedTile {

@@ -186,17 +186,34 @@ void main() {
       );
     });
 
-    test('refuses to export a level over the maxPixels safety limit', () async {
+    test(
+      'refuses to export a level over an explicitly-passed maxPixels limit',
+      () async {
+        final svs = await openTestFile(width: 512, height: 512);
+        await expectLater(
+          exportSvsLevel(
+            svs,
+            level: 0,
+            format: SvsImageFormat.png,
+            maxPixels: 1000, // 512x512 = 262144 px, well over this
+          ),
+          throwsA(isA<ArgumentError>()),
+        );
+      },
+    );
+
+    test('has no pixel-count limit by default', () async {
+      // 512x512 would have exceeded the maxPixels: 1000 cap above, but with
+      // no maxPixels passed at all, it just works.
       final svs = await openTestFile(width: 512, height: 512);
-      await expectLater(
-        exportSvsLevel(
-          svs,
-          level: 0,
-          format: SvsImageFormat.png,
-          maxPixels: 1000, // 512x512 = 262144 px, well over this
-        ),
-        throwsA(isA<ArgumentError>()),
+      final bytes = await exportSvsLevel(
+        svs,
+        level: 0,
+        format: SvsImageFormat.png,
       );
+      final decoded = img.decodePng(bytes)!;
+      expect(decoded.width, 512);
+      expect(decoded.height, 512);
     });
 
     test('exports a level within the safety limit', () async {
