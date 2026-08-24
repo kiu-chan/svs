@@ -25,6 +25,13 @@ abstract final class TiffType {
   static const ifd8 = 18;
 }
 
+/// Number of tiles needed to cover [dim] pixels at [tileDim] pixels each —
+/// the last tile in a row/column covers whatever's left over, which may be
+/// smaller than [tileDim]. Shared by every tiled-TIFF geometry calculation
+/// (level tile grids, pyramid-writer tile grids) rather than each
+/// reimplementing the same ceiling division.
+int tilesAcross(int dim, int tileDim) => (dim / tileDim).ceil();
+
 /// Size in bytes of a single value of [type].
 int tiffTypeSize(int type) {
   switch (type) {

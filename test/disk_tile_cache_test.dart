@@ -122,6 +122,28 @@ void main() {
     expect(await _imageToRgba(image!), original);
   });
 
+  test("concurrent put() calls for different keys don't under-evict against a "
+      'shared budget', () async {
+    // Each 1x1 RGBA tile is 4 + 8 header = 12 bytes; budget for exactly
+    // one. Neither put is awaited before the other starts, so their
+    // accounting sections (existing-entry removal, eviction, insertion)
+    // race unless DiskTileCache.put serializes that part.
+    final cache = await DiskTileCache.open(tempDir, maxBytes: 12);
+    const keyA = TileCacheKey(level: 0, tileX: 0, tileY: 0);
+    const keyB = TileCacheKey(level: 0, tileX: 1, tileY: 0);
+
+    await Future.wait([
+      cache.put(keyA, _pixels(1, 1, 1), 1, 1),
+      cache.put(keyB, _pixels(1, 1, 2), 1, 1),
+    ]);
+
+    // Exactly one tile should survive (the other evicted to stay at most
+    // one tile over budget, same policy as sequential puts) — not both,
+    // which would silently double the byte budget.
+    expect(cache.length, 1);
+    expect(cache.currentBytes, 12);
+  });
+
   test('clear() deletes every file and resets accounting', () async {
     final cache = await DiskTileCache.open(tempDir);
     await cache.put(

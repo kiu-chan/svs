@@ -29,8 +29,32 @@
   used to suppress pan/zoom while drawing; point/polyline/polygon mode
   placed vertices via tap but left the underlying pan/zoom gesture live
   underneath, so a quick run of taps could occasionally be misread as a
-  pinch. Pan/zoom is now fully suppressed for the whole time any annotation
-  shape is being drawn.
+  pinch. Pan/zoom is now fully suppressed (`GestureDetector`'s scale
+  callbacks are nulled out entirely, not just short-circuited) for the whole
+  time any annotation shape is being drawn, and takes effect on the very
+  next gesture even if `drawMode` changes with no other rebuild in between.
+* Fixed: `SvsFile.readInfo()`/`readAllTags()`/`readTags()` could throw (or,
+  for a corrupted `count` field, attempt a multi-gigabyte read) if any tag
+  anywhere in the file had an unrecognized TIFF field type — aborting the
+  entire "best-effort full dump" over one bad tag. Both now surface as a
+  short `<unreadable: ...>` placeholder for that one tag instead.
+* Fixed: concurrent `DiskTileCache.put()` calls for different tiles (routine
+  during fast pan/zoom, since decoded tiles persist to disk unawaited) could
+  race on the shared byte-budget accounting and eviction, letting the cache
+  temporarily grow past `maxBytes` by more than the documented
+  single-oversized-tile allowance. The accounting/eviction half of `put` is
+  now serialized against itself.
+* `exportSvsRegionAsSvs` now builds the pyramid (downsampling, JPEG
+  encoding, the BigTIFF write) on a background isolate instead of blocking
+  the calling isolate — previously a large crop could freeze the UI for
+  the whole encode.
+* `LodController` no longer persists prefetch-margin tiles (only ever
+  fetched speculatively, not yet on screen) to the disk cache — only tiles
+  actually visible when decoded are, roughly halving disk I/O during fast
+  panning.
+* Internal: `TileCache` and `DiskTileCache` now share their LRU eviction
+  policy (`pickEvictions`) instead of maintaining two independent copies of
+  the same algorithm.
 
 ## 0.3.0
 

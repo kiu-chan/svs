@@ -210,6 +210,29 @@ void main() {
       },
       timeout: _testTimeout,
     );
+
+    testWidgets('switching drawMode mid-session (no other rebuild in between) '
+        'suppresses the very next gesture', (tester) async {
+      final controller = SvsAnnotationController();
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        _wrap(SvsImageView(svsFile: svs, annotationController: controller)),
+      );
+      await tester.pump();
+
+      // Flip drawMode — nothing else triggers a rebuild here. If the
+      // gesture layer only picked this up on some later, unrelated
+      // rebuild (e.g. the one a zoom/pan itself causes), the pinch right
+      // below would still land as an ordinary zoom instead of being
+      // suppressed.
+      controller.drawMode = SvsAnnotationDrawMode.point;
+
+      final before = _zoomPercentText(tester);
+      await _pinchOut(tester);
+      await tester.pump();
+      expect(_zoomPercentText(tester), before);
+    }, timeout: _testTimeout);
   });
 
   group('display options', () {

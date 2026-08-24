@@ -142,10 +142,19 @@ class _SvsImageViewState extends State<SvsImageView>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _lod.addListener(_onTilesChanged);
+    // So the gesture layer's pan/zoom suppression (see
+    // _isDrawingAnnotation) picks up a `drawMode` change on the very next
+    // gesture, not just whatever later rebuild happens to come along for an
+    // unrelated reason.
+    widget.annotationController?.addListener(_onAnnotationChanged);
     if (widget.showMinimap) unawaited(_loadOverview());
   }
 
   void _onTilesChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _onAnnotationChanged() {
     if (mounted) setState(() {});
   }
 
@@ -193,6 +202,7 @@ class _SvsImageViewState extends State<SvsImageView>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _lod.removeListener(_onTilesChanged);
+    widget.annotationController?.removeListener(_onAnnotationChanged);
     _lod.dispose();
     _overviewImage?.dispose();
     if (_ownsCache) _cache.clear();
@@ -218,6 +228,37 @@ class _SvsImageViewState extends State<SvsImageView>
 
   Offset _toLevel0(Offset screenPoint) => _origin + screenPoint / _scale;
 
+  /// The tile layer plus its pointer handling — pan/zoom via
+  /// [_onScaleStart]/[_onScaleUpdate]/[_onScaleEnd] (nulled out entirely
+  /// while [_isDrawingAnnotation] and not [_isDraftingRect] — see that
+  /// getter's doc comment) and, when annotating, tap routing via
+  /// [_onTapUp]. Re-evaluated on every build, including ones triggered by
+  /// [_onAnnotationChanged] when the annotation controller's `drawMode`
+  /// changes.
+  Widget _buildGestureLayer(Size viewportSize) {
+    final suppressPanZoom = _isDrawingAnnotation && !_isDraftingRect;
+    return Listener(
+      onPointerSignal: _onPointerSignal,
+      child: GestureDetector(
+        onScaleStart: suppressPanZoom ? null : _onScaleStart,
+        onScaleUpdate: suppressPanZoom ? null : _onScaleUpdate,
+        onScaleEnd: suppressPanZoom ? null : _onScaleEnd,
+        onTapUp: widget.annotationController == null ? null : _onTapUp,
+        child: CustomPaint(
+          size: viewportSize,
+          painter: _TilePainter(
+            svsFile: widget.svsFile,
+            cache: _cache,
+            scale: _scale,
+            origin: _origin,
+            maxUpsample: widget.maxUpsample,
+            adjustments: widget.adjustments,
+          ),
+        ),
+      ),
+    );
+  }
+
   bool get _isDraftingRect =>
       widget.annotationController?.drawMode == SvsAnnotationDrawMode.rectangle;
 
@@ -225,15 +266,18 @@ class _SvsImageViewState extends State<SvsImageView>
   /// pan/zoom must stay fully inert. Rectangle mode already gets its own
   /// dedicated drag handling below ([_isDraftingRect]); point/polyline/
   /// polygon mode instead places vertices via [_onTapUp], one tap at a
-  /// time — but the same [GestureDetector] still runs a `ScaleGestureRecognizer`
-  /// underneath every tap (`onScaleStart`/`onScaleUpdate` fire on pointer
-  /// down/move regardless of draw mode). Left unguarded, a quick series of
-  /// taps placing several vertices could have its pointer-down/up events
-  /// overlap enough for the recognizer to briefly see two "concurrent"
-  /// pointers and compute a wild span-ratio scale from them — visible as the
-  /// zoom-percent HUD jumping to a nonsensical number. Suppressing pan/zoom
-  /// outright for the whole time a shape is being drawn removes that failure
-  /// mode entirely, instead of chasing the exact recognizer race.
+  /// time — but the same [GestureDetector] would otherwise still run a
+  /// `ScaleGestureRecognizer` underneath every tap (`onScaleStart`/
+  /// `onScaleUpdate` fire on pointer down/move regardless of draw mode). A
+  /// quick series of taps placing several vertices could have its
+  /// pointer-down/up events overlap enough for the recognizer to briefly see
+  /// two "concurrent" pointers and compute a wild span-ratio scale from
+  /// them — visible as the zoom-percent HUD jumping to a nonsensical number.
+  /// [build] nulls out `onScaleStart`/`onScaleUpdate`/`onScaleEnd` on the
+  /// `GestureDetector` outright when this is true (`GestureDetector` treats
+  /// a null callback as "don't recognize this gesture at all") — the
+  /// recognizer never starts tracking pointers in the first place, rather
+  /// than starting and having its result discarded.
   bool get _isDrawingAnnotation =>
       widget.annotationController != null &&
       widget.annotationController!.drawMode != SvsAnnotationDrawMode.none;
@@ -244,7 +288,6 @@ class _SvsImageViewState extends State<SvsImageView>
       controller.startRectDraft(_toLevel0(details.localFocalPoint));
       return;
     }
-    if (_isDrawingAnnotation) return;
     _gestureStartScale = _scale;
     _gestureStartOrigin = _origin;
     _gestureStartFocalPoint = details.localFocalPoint;
@@ -256,7 +299,6 @@ class _SvsImageViewState extends State<SvsImageView>
       controller.updateRectDraft(_toLevel0(details.localFocalPoint));
       return;
     }
-    if (_isDrawingAnnotation) return;
     _zoomAndPanTo(
       startScale: _gestureStartScale,
       startOrigin: _gestureStartOrigin,
@@ -273,7 +315,6 @@ class _SvsImageViewState extends State<SvsImageView>
       controller.commitRectDraft();
       return;
     }
-    if (_isDrawingAnnotation) return;
     _lod.flushNow(_viewportSize!, _scale, _origin);
   }
 
@@ -370,28 +411,12 @@ class _SvsImageViewState extends State<SvsImageView>
         return ClipRect(
           child: Stack(
             children: [
-              Listener(
-                onPointerSignal: _onPointerSignal,
-                child: GestureDetector(
-                  onScaleStart: _onScaleStart,
-                  onScaleUpdate: _onScaleUpdate,
-                  onScaleEnd: _onScaleEnd,
-                  onTapUp: widget.annotationController == null
-                      ? null
-                      : _onTapUp,
-                  child: CustomPaint(
-                    size: viewportSize,
-                    painter: _TilePainter(
-                      svsFile: widget.svsFile,
-                      cache: _cache,
-                      scale: _scale,
-                      origin: _origin,
-                      maxUpsample: widget.maxUpsample,
-                      adjustments: widget.adjustments,
-                    ),
-                  ),
-                ),
-              ),
+              // _onAnnotationChanged (registered in initState) already
+              // triggers a rebuild whenever `drawMode` changes, so this
+              // always reflects the current pan/zoom suppression state
+              // (see _isDrawingAnnotation) without needing an AnimatedBuilder
+              // wrapped around it.
+              _buildGestureLayer(viewportSize),
               if (widget.annotationController != null)
                 IgnorePointer(
                   child: AnimatedBuilder(

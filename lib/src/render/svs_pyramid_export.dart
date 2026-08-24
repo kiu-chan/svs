@@ -3,10 +3,12 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 
 import '../errors.dart';
 import '../svs/svs_file.dart';
+import '../tiff/tiff_types.dart' show tilesAcross;
 import '../tiff/tiff_writer.dart';
 import 'image_adjustments.dart';
 import 'image_export.dart' show defaultExportMaxPixels;
@@ -83,33 +85,101 @@ Future<Uint8List> exportSvsRegionAsSvs(
         'Image.toByteData returned null (the image may already be disposed)',
       );
     }
-    pixels = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+    // A standalone copy, not a view over `data`'s buffer — `compute` sends
+    // it to another isolate, which can't share memory with this one.
+    pixels = Uint8List.fromList(
+      data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+    );
   } finally {
     regionImage.dispose();
   }
-  adjustments.applyToRgba(pixels);
-
-  var current = img.Image.fromBytes(
-    width: width,
-    height: height,
-    bytes: pixels.buffer,
-    bytesOffset: pixels.offsetInBytes,
-    numChannels: 4,
-    order: img.ChannelOrder.rgba,
-  );
 
   final sourceLevel = svsFile.levels[level];
   final sourceMppX = svsFile.metadata.mppX;
   final mpp = sourceMppX == null ? null : sourceMppX * sourceLevel.downsample;
-  final appMag = svsFile.metadata.appMag;
 
+  // Everything from here on (adjustments, downsampling, JPEG encoding, the
+  // BigTIFF write) is pure computation on plain data — no `dart:ui`
+  // involved — so it runs on a background isolate instead of blocking
+  // whichever isolate called this (typically the main/UI isolate, since
+  // `readSvsRegion` above requires it). A large crop can mean encoding well
+  // over a thousand tiles across the whole pyramid; without this, that
+  // freezes the UI for the entire duration.
+  return compute(
+    _buildPyramidBytes,
+    _PyramidBuildParams(
+      pixels: pixels,
+      width: width,
+      height: height,
+      tileSize: tileSize,
+      quality: quality,
+      mpp: mpp,
+      appMag: svsFile.metadata.appMag,
+      brightness: adjustments.brightness,
+      contrast: adjustments.contrast,
+      shadows: adjustments.shadows,
+      highlights: adjustments.highlights,
+    ),
+  );
+}
+
+/// Everything [exportSvsRegionAsSvs] does after decoding the source region —
+/// packaged as a top-level function + a plain-data argument so [compute] can
+/// run it on a background isolate.
+class _PyramidBuildParams {
+  final Uint8List pixels;
+  final int width;
+  final int height;
+  final int tileSize;
+  final int quality;
+  final double? mpp;
+  final int? appMag;
+  final double brightness;
+  final double contrast;
+  final double shadows;
+  final double highlights;
+
+  const _PyramidBuildParams({
+    required this.pixels,
+    required this.width,
+    required this.height,
+    required this.tileSize,
+    required this.quality,
+    required this.mpp,
+    required this.appMag,
+    required this.brightness,
+    required this.contrast,
+    required this.shadows,
+    required this.highlights,
+  });
+}
+
+Uint8List _buildPyramidBytes(_PyramidBuildParams params) {
+  final adjustments = SvsImageAdjustments(
+    brightness: params.brightness,
+    contrast: params.contrast,
+    shadows: params.shadows,
+    highlights: params.highlights,
+  );
+  adjustments.applyToRgba(params.pixels);
+
+  var current = img.Image.fromBytes(
+    width: params.width,
+    height: params.height,
+    bytes: params.pixels.buffer,
+    bytesOffset: params.pixels.offsetInBytes,
+    numChannels: 4,
+    order: img.ChannelOrder.rgba,
+  );
+
+  final tileSize = params.tileSize;
   final writerLevels = <TiffWriterLevel>[];
   var levelIndex = 0;
   while (true) {
     final levelWidth = current.width;
     final levelHeight = current.height;
-    final tilesX = (levelWidth / tileSize).ceil();
-    final tilesY = (levelHeight / tileSize).ceil();
+    final tilesX = tilesAcross(levelWidth, tileSize);
+    final tilesY = tilesAcross(levelHeight, tileSize);
 
     final tileBytes = <Uint8List>[];
     for (var ty = 0; ty < tilesY; ty++) {
@@ -125,7 +195,7 @@ Future<Uint8List> exportSvsRegionAsSvs(
           width: tileW,
           height: tileH,
         );
-        tileBytes.add(img.encodeJpg(tile, quality: quality));
+        tileBytes.add(img.encodeJpg(tile, quality: params.quality));
       }
     }
 
@@ -140,9 +210,9 @@ Future<Uint8List> exportSvsRegionAsSvs(
                 width: levelWidth,
                 height: levelHeight,
                 tileSize: tileSize,
-                quality: quality,
-                mpp: mpp,
-                appMag: appMag,
+                quality: params.quality,
+                mpp: params.mpp,
+                appMag: params.appMag,
               )
             : null,
         tileJpegBytes: tileBytes,

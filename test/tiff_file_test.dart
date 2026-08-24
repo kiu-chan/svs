@@ -96,6 +96,69 @@ void main() {
     );
   });
 
+  group('readAllValues / readValues resilience', () {
+    test('a tag with an unrecognized TIFF field type becomes a placeholder '
+        'instead of aborting the whole dump', () async {
+      final bytes = buildTiff(
+        bigTiff: false,
+        order: Endian.little,
+        ifds: [
+          [
+            TestTag.ints(256, TiffType.short, [100], Endian.little),
+            TestTag(999, 12345, 1, Uint8List(4)), // type 12345 doesn't exist
+          ],
+        ],
+      );
+      final tiff = await openBytes(bytes);
+
+      final values = await tiff.ifds[0].readAllValues();
+
+      expect(values[256], [100]);
+      expect(values[999], isA<String>());
+      expect(values[999], contains('unreadable'));
+    });
+
+    test('a tag with a corrupt/huge count becomes a placeholder instead of '
+        'attempting a giant read', () async {
+      final bytes = buildTiff(
+        bigTiff: false,
+        order: Endian.little,
+        ifds: [
+          [
+            TestTag.ints(256, TiffType.short, [100], Endian.little),
+            // count=4e9 of LONG (4 bytes each) claims ~16 GB.
+            TestTag(324, TiffType.long, 4000000000, Uint8List(4)),
+          ],
+        ],
+      );
+      final tiff = await openBytes(bytes);
+
+      final values = await tiff.ifds[0].readAllValues();
+
+      expect(values[256], [100]);
+      expect(values[324], isA<String>());
+      expect(values[324], contains('unreadable'));
+    });
+
+    test('readValue itself (not the readValues/readAllValues wrapper) still '
+        'throws for an unreadable tag — resilience is opt-in via the '
+        'many-tags accessors', () async {
+      final bytes = buildTiff(
+        bigTiff: false,
+        order: Endian.little,
+        ifds: [
+          [TestTag(999, 12345, 1, Uint8List(4))],
+        ],
+      );
+      final tiff = await openBytes(bytes);
+
+      await expectLater(
+        tiff.ifds[0].readValue(999),
+        throwsA(isA<SvsFormatException>()),
+      );
+    });
+  });
+
   test('classic TIFF, big-endian decodes the same as little-endian', () async {
     final bytes = buildTiff(
       bigTiff: false,

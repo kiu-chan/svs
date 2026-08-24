@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'lru_eviction.dart';
 import 'tile_cache.dart' show TileCacheKey;
 
 /// A disk-backed cache of decoded tile pixels, so re-opening the same slide
@@ -28,6 +29,17 @@ class DiskTileCache {
 
   final _entries = <TileCacheKey, _DiskEntry>{};
   int _currentBytes = 0;
+
+  // Serializes the *accounting* half of `put` (existing-entry removal,
+  // eviction, and the new entry's insertion) — the actual file write in
+  // `put` can safely run concurrently for different keys, but this part
+  // reads-then-writes shared `_entries`/`_currentBytes` across an `await`
+  // (eviction's own file deletes), so two `put`s racing through it
+  // unserialized could each compute eviction against a budget that doesn't
+  // yet reflect the other's insertion. `LodController` fires many unawaited
+  // `put`s for different tiles during a fast pan/zoom, so this is reachable
+  // in practice, not just theoretical.
+  Future<void> _accountingQueue = Future.value();
 
   DiskTileCache._(this.directory, this.maxBytes);
 
@@ -123,6 +135,18 @@ class DiskTileCache {
       return;
     }
 
+    final previous = _accountingQueue;
+    final result = previous.then((_) => _applyPut(key, file, payload.length));
+    // Keep the queue moving even if this put's accounting failed (it
+    // shouldn't — no user code runs in `_applyPut` — but a wedged queue
+    // would silently break every future `put`).
+    _accountingQueue = result.then((_) {}, onError: (_) {});
+    return result;
+  }
+
+  /// The accounting half of [put] — see [_accountingQueue] for why this runs
+  /// serialized rather than inline in [put].
+  Future<void> _applyPut(TileCacheKey key, File file, int byteSize) async {
     final existing = _entries.remove(key);
     if (existing != null) _currentBytes -= existing.byteSize;
 
@@ -130,15 +154,22 @@ class DiskTileCache {
     // single tile larger than maxBytes on its own is kept (temporarily
     // exceeding the budget) rather than being deleted the instant it's
     // written, and eviction only ever touches other, older entries.
-    await _evictIfNeeded(reserve: payload.length);
+    await _evictIfNeeded(reserve: byteSize);
 
-    _entries[key] = _DiskEntry(file: file, byteSize: payload.length);
-    _currentBytes += payload.length;
+    _entries[key] = _DiskEntry(file: file, byteSize: byteSize);
+    _currentBytes += byteSize;
   }
 
   Future<void> _evictIfNeeded({int reserve = 0}) async {
-    while (_entries.isNotEmpty && _currentBytes + reserve > maxBytes) {
-      final oldest = _entries.remove(_entries.keys.first)!;
+    final victims = pickEvictions(
+      _entries.keys,
+      (k) => _entries[k]!.byteSize,
+      currentBytes: _currentBytes,
+      maxBytes: maxBytes,
+      reserve: reserve,
+    );
+    for (final k in victims) {
+      final oldest = _entries.remove(k)!;
       _currentBytes -= oldest.byteSize;
       try {
         await oldest.file.delete();

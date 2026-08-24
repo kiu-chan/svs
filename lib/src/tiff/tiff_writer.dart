@@ -32,8 +32,8 @@ class TiffWriterLevel {
     this.imageDescription,
   });
 
-  int get tilesAcrossX => (width / tileWidth).ceil();
-  int get tilesAcrossY => (height / tileLength).ceil();
+  int get tilesAcrossX => tilesAcross(width, tileWidth);
+  int get tilesAcrossY => tilesAcross(height, tileLength);
 }
 
 /// One IFD tag entry pending layout: [count]/[type] are always known up

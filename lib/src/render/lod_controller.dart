@@ -238,8 +238,12 @@ class LodController extends ChangeNotifier {
       // Persist a freshly-decoded tile (not one that just came from the
       // disk cache itself) *after* the tile is already visible — the GPU
       // pixel readback this needs shouldn't delay the tile's first paint,
-      // and the disk write itself is fire-and-forget.
-      if (disk != null && !fromDisk) {
+      // and the disk write itself is fire-and-forget. Only for tiles that
+      // are actually on screen, not ones fetched just for the prefetch
+      // margin — a tile scrolled back out of view before it's ever painted
+      // would otherwise still pay a full GPU readback and disk write for
+      // nothing.
+      if (disk != null && !fromDisk && priority == TilePriority.visible) {
         unawaited(_persistToDisk(disk, key, image));
       }
     } catch (_) {

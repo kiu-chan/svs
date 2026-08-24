@@ -1,5 +1,7 @@
 import 'dart:ui' as ui;
 
+import 'lru_eviction.dart';
+
 class TileCacheKey {
   final int level;
   final int tileX;
@@ -73,8 +75,15 @@ class TileCache {
       existing.image.dispose();
     }
 
-    while (_entries.isNotEmpty && _currentBytes + byteSize > maxBytes) {
-      final oldest = _entries.remove(_entries.keys.first)!;
+    final victims = pickEvictions(
+      _entries.keys,
+      (k) => _entries[k]!.byteSize,
+      currentBytes: _currentBytes,
+      maxBytes: maxBytes,
+      reserve: byteSize,
+    );
+    for (final k in victims) {
+      final oldest = _entries.remove(k)!;
       _currentBytes -= oldest.byteSize;
       oldest.image.dispose();
     }

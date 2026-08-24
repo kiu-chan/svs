@@ -46,6 +46,12 @@ class TiffTag {
   int get totalBytes => count * tiffTypeSize(type);
 }
 
+/// Safety cap on a single tag's out-of-line value size (see
+/// [TiffIfd._resolveValueBytes]) — comfortably above any real SVS tag (even
+/// a full-pyramid TileOffsets/TileByteCounts array is low tens of MB at
+/// most), so this only ever rejects corrupted data.
+const _maxOutOfLineTagBytes = 256 * 1024 * 1024;
+
 class TiffIfd {
   final int offset;
   final Map<int, TiffTag> tags;
@@ -68,11 +74,24 @@ class TiffIfd {
     if (t.totalBytes <= inlineSize) {
       return Uint8List.sublistView(t.valueField, 0, t.totalBytes);
     }
+    // A tag's `count` is attacker/corruption-controlled data straight off
+    // disk (an 8-byte field in BigTIFF, up to 2^64-1) — without this cap, a
+    // single malformed tag's `totalBytes` could trigger an attempted
+    // multi-gigabyte read/allocation instead of a clean format error. No
+    // legitimate SVS tag (even a full-pyramid TileOffsets/TileByteCounts
+    // array) comes anywhere close to this.
+    if (t.totalBytes > _maxOutOfLineTagBytes) {
+      throw SvsFormatException(
+        'Tag ${t.id} in IFD at offset $offset claims ${t.totalBytes} bytes '
+        '(count=${t.count}), over the $_maxOutOfLineTagBytes byte safety '
+        'limit — likely corrupt',
+      );
+    }
     final data = ByteData.sublistView(t.valueField);
-    final offset = _file.header.kind == TiffKind.bigTiff
+    final valueOffset = _file.header.kind == TiffKind.bigTiff
         ? data.getUint64(0, _file.header.byteOrder)
         : data.getUint32(0, _file.header.byteOrder);
-    return _file.readBytes(offset, t.totalBytes);
+    return _file.readBytes(valueOffset, t.totalBytes);
   }
 
   TiffTag _require(int id) {
@@ -152,10 +171,21 @@ class TiffIfd {
 
   /// [readValue] for just [ids] — silently skips any not present in this
   /// IFD. The "partial info" counterpart to [readAllValues].
+  ///
+  /// Best-effort per tag: a tag this package can't decode (an unrecognized
+  /// TIFF field type, or one that trips [_maxOutOfLineTagBytes]) doesn't
+  /// abort the whole call — its value comes back as a short description of
+  /// the failure instead, so one bad/corrupt tag can't take down an
+  /// otherwise-readable dump of the rest of the IFD.
   Future<Map<int, Object>> readValues(Iterable<int> ids) async {
     final result = <int, Object>{};
     for (final id in ids) {
-      if (hasTag(id)) result[id] = await readValue(id);
+      if (!hasTag(id)) continue;
+      try {
+        result[id] = await readValue(id);
+      } on SvsException catch (e) {
+        result[id] = '<unreadable: ${e.message}>';
+      }
     }
     return result;
   }

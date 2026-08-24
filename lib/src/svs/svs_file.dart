@@ -9,6 +9,7 @@ import '../tiff/compression/tiff_decompress.dart';
 import '../tiff/predictor.dart';
 import '../tiff/raster.dart';
 import '../tiff/tiff_file.dart';
+import '../tiff/tiff_types.dart' show tilesAcross;
 import 'aperio_tags.dart';
 import 'svs_file_info.dart';
 import 'svs_metadata.dart';
@@ -252,8 +253,8 @@ class SvsLevelGeometry {
     required this.downsample,
   });
 
-  int get tilesAcrossX => (width / tileWidth).ceil();
-  int get tilesAcrossY => (height / tileLength).ceil();
+  int get tilesAcrossX => tilesAcross(width, tileWidth);
+  int get tilesAcrossY => tilesAcross(height, tileLength);
 }
 
 /// One level of the resolution pyramid: level 0 is full resolution, each
