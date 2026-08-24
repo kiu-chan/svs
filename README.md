@@ -291,6 +291,13 @@ await exportSvsRegionAsSvsToFile(
 );
 ```
 
+> **Note:** `jp2kCompressionRatio` above `0` is *lossy* — the decoded pixels
+> won't exactly match the source anymore, in exchange for a smaller file.
+> `quality` below 100 is lossy the same way for `SvsExportCompression.jpeg`
+> (JPEG has no lossless mode at all). For pathology slides, where diagnostic
+> detail matters, prefer the lossless defaults (`jp2kCompressionRatio: 0`,
+> or `quality: 100`) unless file size is a hard constraint.
+
 The source file's own label/macro images and other `ImageDescription`
 metadata (Filename, Date, ScanScope ID, etc.) are carried into the exported
 file by default — `includeLabelAndMacroImages`/`includeSourceMetadata`
