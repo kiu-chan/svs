@@ -16,8 +16,10 @@ never loaded into memory, however large the slide.
 * **Level-of-detail tile streaming**: only the visible region's tiles are
   fetched and decoded, at the resolution level that matches the current
   zoom — panning and zooming a multi-gigapixel slide stays smooth.
-* **Background isolate decoding**: tile I/O and JPEG2000 decode run off the
-  main isolate, so the UI thread stays responsive.
+* **Background isolate decoding** (native platforms): tile I/O and JPEG2000
+  decode run off the main isolate, so the UI thread stays responsive. On the
+  web, which has no background isolates, decoding runs on the calling
+  thread instead — see [Platform support](#platform-support).
 * **JPEG and JPEG2000 tiles**, the two compressions Aperio actually ships
   (`Compression` 7 and 33005) — JPEG2000 via
   [`openjpeg_ffi`](https://pub.dev/packages/openjpeg_ffi).
@@ -53,15 +55,48 @@ never loaded into memory, however large the slide.
   level to PNG, JPEG, BMP, TIFF, or WebP bytes.
 * Memory-pressure aware tile cache, and active cancellation of in-flight
   tile requests once they scroll out of view.
-* **Persistent disk tile cache** (`DiskTileCache`, opt-in): decoded tiles
-  survive across app restarts, so re-viewing the same region of a slide
-  skips both the tile fetch and — for JPEG2000 slides — the wavelet decode.
+* **Persistent disk tile cache** (`DiskTileCache`, opt-in, native platforms
+  only): decoded tiles survive across app restarts, so re-viewing the same
+  region of a slide skips both the tile fetch and — for JPEG2000 slides —
+  the wavelet decode.
+
+## Platform support
+
+`svs` runs on every Flutter platform — iOS, Android, macOS, Windows, Linux,
+and (since 1.2.0) the web — with the same API (`SvsFile`, `SvsImageView`,
+region/pyramid export, annotations). JPEG2000 decoding is native on all of
+them via [`openjpeg_ffi`](https://pub.dev/packages/openjpeg_ffi), which
+compiles OpenJPEG to WebAssembly for the web build.
+
+A few things are unavoidably different on the web, since it has no
+filesystem and no background isolates:
+
+* **No filesystem path**: `SvsFile.open(path)` isn't usable in a browser.
+  Use `SvsFile.openBytes(bytes)` instead — feed it the slide's bytes
+  directly (e.g. from an `<input type=file>`/`package:file_picker` pick, or
+  a network fetch). `SvsFile.path` is `null` for a file opened this way. See
+  `example/` for a working file-picker-based web entry point.
+* **No background-isolate decoding**: tile fetch/JPEG2000 decode runs on the
+  calling thread instead of a worker isolate — this falls back
+  automatically, no code changes needed, but a JP2K-heavy slide may feel
+  less smooth while panning/zooming than on native.
+* **No `DiskTileCache`**: there's no filesystem to persist tiles to across
+  page reloads. The in-memory `TileCache` (always on) still avoids
+  re-decoding a tile you're actively panning back and forth over.
+* **No `*ToFile` export helpers**: `exportSvsRegionToFile`,
+  `exportAssociatedImageToFile`, `exportSvsLevelToFile`,
+  `exportSvsRegionAsSvsToFile`, and
+  `exportSvsRegionAsSvsPreservingLevelsToFile` all write to a filesystem
+  path and so aren't available on the web. Use their byte-returning
+  siblings (`exportSvsRegion`, `exportAssociatedImage`, `exportSvsLevel`,
+  `exportSvsRegionAsSvs`, `exportSvsRegionAsSvsPreservingLevels`) and trigger
+  a browser download yourself with the resulting bytes.
 
 ## Getting started
 
 ```yaml
 dependencies:
-  svs: ^1.0.0
+  svs: ^1.2.0
 ```
 
 ## Usage
@@ -79,6 +114,14 @@ SvsImageView(svsFile: svsFile);
 await svsFile.close();
 ```
 
+On the web (no filesystem path to open), use `SvsFile.openBytes` instead —
+see [Platform support](#platform-support):
+
+```dart
+final bytes = await pickedSlideBytes(); // e.g. from package:file_picker
+final svsFile = await SvsFile.openBytes(bytes);
+```
+
 `SvsImageView` handles pan/zoom gestures, tile streaming, and the minimap/
 HUD on its own — no further wiring needed. Each overlay can be turned off
 independently:
@@ -94,7 +137,8 @@ SvsImageView(
 
 ### Persistent tile cache
 
-By default, decoded tiles are cached in memory only — closing and
+Native platforms only — see [Platform support](#platform-support). By
+default, decoded tiles are cached in memory only — closing and
 re-opening the same slide decodes everything again from scratch. Pass a
 `DiskTileCache` to keep decoded tiles on disk between sessions, scoped to a
 directory unique to that slide (mixing tiles from different slides in one

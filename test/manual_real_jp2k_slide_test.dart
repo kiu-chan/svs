@@ -3,6 +3,9 @@
 // the rest of test/ — exercises real openjpeg_ffi decode + region stitching
 // + format export end to end. Skips itself (does not fail) if the fixture
 // file isn't present on this machine, since it isn't checked into this repo.
+@TestOn('vm')
+library;
+
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';

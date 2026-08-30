@@ -1,3 +1,56 @@
+## 1.2.0
+
+* **Web support.** `svs` now runs on Flutter Web, with the same API surface
+  as native platforms — see the README's new "Platform support" section for
+  the (small) list of things that differ. `openjpeg_ffi` bumped to `^0.3.0`,
+  whose WebAssembly build supplies JPEG2000 decode/encode on the web; every
+  `dart:io`/`dart:isolate` usage in this package is now behind a conditional
+  export, mirroring the pattern `openjpeg_ffi` itself already uses
+  (`export 'x_stub.dart' if (dart.library.io) 'x_io.dart';`).
+* `SvsFile.openBytes(Uint8List bytes)`: opens a slide already fully in
+  memory — the entry point for the web (no filesystem path to give
+  `SvsFile.open`), and also usable natively for bytes that came from
+  somewhere other than a local file (e.g. a network fetch). `SvsFile.path`
+  (and `SvsFileInfo.path`) is now `String?`, null for a file opened this
+  way — the one source-breaking change in this release, and only reachable
+  if calling code stored `.path` in a non-nullable `String`.
+* `DiskTileCache` and the isolate-backed `TileWorkerPool` tile-fetch path are
+  native-only (`dart:io`/`dart:isolate` have no web equivalent). Neither
+  needs any code change to accommodate the web: `SvsImageView`'s
+  `LodController` already fell back to fetching/decoding tiles on the
+  calling isolate whenever the worker pool wasn't available, which is
+  exactly what happens on the web now (matching `openjpeg_ffi`'s own web
+  behavior — its JPEG2000 decode has no background-isolate path there
+  either). `DiskTileCache.open` still exists as a type on the web (so
+  `SvsImageView(diskCache: ...)` keeps compiling) but throws if actually
+  called; omit it (the default) and the in-memory `TileCache` still applies.
+* `exportSvsRegionToFile`, `exportAssociatedImageToFile`,
+  `exportSvsLevelToFile`, `exportSvsRegionAsSvsToFile`, and
+  `exportSvsRegionAsSvsPreservingLevelsToFile` — every export function that
+  writes to a filesystem path and returns a `File` — are native-only and
+  simply aren't declared on the web (a `File`-typed return can't exist
+  there). Use their byte-returning siblings (`exportSvsRegion`,
+  `exportAssociatedImage`, `exportSvsLevel`, `exportSvsRegionAsSvs`,
+  `exportSvsRegionAsSvsPreservingLevels`, all unchanged) plus your own
+  browser-download mechanism instead.
+* `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsPreservingLevels` (the
+  byte-returning pyramid-export functions) now build their output pyramid in
+  an in-memory buffer throughout, instead of streaming through a temporary
+  file on disk and reading it back at the end. Both already fully
+  materialized the result into memory before returning it, so the
+  observable output is unchanged — but peak memory during construction is
+  now closer to the final output size for the whole export, not just at the
+  very end. For an export large enough that this matters, prefer the
+  (still disk-streamed, native-only) `*ToFile` variants.
+* Deflate/AdobeDeflate-compressed associated images (TIFF `Compression` 8/
+  32946) now decode via `package:archive`'s `ZLibDecoder` instead of
+  `dart:io`'s — pure Dart, works on every platform including the web, and
+  decodes identically (only reachable for label/macro/thumbnail strips;
+  pyramid tile levels never use Deflate).
+* `example/` now picks a file via `package:file_picker` and opens it with
+  `SvsFile.openBytes` when running on the web (`kIsWeb`), instead of the
+  path-`TextField` it already had for native.
+
 ## 1.1.0
 
 * `openjpeg_ffi` bumped to `^0.2.0`, and `exportSvsRegionAsSvs`/

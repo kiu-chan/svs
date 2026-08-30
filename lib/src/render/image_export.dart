@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -145,36 +144,6 @@ Future<Uint8List> exportSvsRegion(
   }
 }
 
-/// Same as [exportSvsRegion], but writes the encoded bytes straight to
-/// [path] instead of returning them.
-Future<File> exportSvsRegionToFile(
-  SvsFile svsFile, {
-  required String path,
-  required int level,
-  required int x,
-  required int y,
-  required int width,
-  required int height,
-  required SvsImageFormat format,
-  int quality = 92,
-  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
-  void Function(double progress)? onProgress,
-}) async {
-  final bytes = await exportSvsRegion(
-    svsFile,
-    level: level,
-    x: x,
-    y: y,
-    width: width,
-    height: height,
-    format: format,
-    quality: quality,
-    adjustments: adjustments,
-    onProgress: onProgress,
-  );
-  return File(path).writeAsBytes(bytes);
-}
-
 /// Decodes an associated [image] (thumbnail/label/macro) and encodes it
 /// straight to [format]'s bytes: a one-call [decodeAssociatedImage] +
 /// [encodeSvsImage] that disposes the intermediate decoded image for you.
@@ -197,24 +166,6 @@ Future<Uint8List> exportAssociatedImage(
   } finally {
     decoded.dispose();
   }
-}
-
-/// Same as [exportAssociatedImage], but writes the encoded bytes straight to
-/// [path] instead of returning them.
-Future<File> exportAssociatedImageToFile(
-  SvsAssociatedImage image, {
-  required String path,
-  required SvsImageFormat format,
-  int quality = 92,
-  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
-}) async {
-  final bytes = await exportAssociatedImage(
-    image,
-    format: format,
-    quality: quality,
-    adjustments: adjustments,
-  );
-  return File(path).writeAsBytes(bytes);
 }
 
 /// Convenience value for [exportSvsLevel]'s `maxPixels`, for a caller that
@@ -275,28 +226,4 @@ Future<Uint8List> exportSvsLevel(
     adjustments: adjustments,
     onProgress: onProgress,
   );
-}
-
-/// Same as [exportSvsLevel], but writes the encoded bytes straight to [path]
-/// instead of returning them.
-Future<File> exportSvsLevelToFile(
-  SvsFile svsFile, {
-  required String path,
-  required int level,
-  required SvsImageFormat format,
-  int quality = 92,
-  int? maxPixels,
-  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
-  void Function(double progress)? onProgress,
-}) async {
-  final bytes = await exportSvsLevel(
-    svsFile,
-    level: level,
-    format: format,
-    quality: quality,
-    maxPixels: maxPixels,
-    adjustments: adjustments,
-    onProgress: onProgress,
-  );
-  return File(path).writeAsBytes(bytes);
 }

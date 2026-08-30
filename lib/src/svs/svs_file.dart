@@ -1,9 +1,10 @@
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:openjpeg_ffi/openjpeg_ffi.dart';
 
 import '../errors.dart';
+import '../io/byte_source.dart';
+import '../io/file_byte_source.dart';
 import '../jpeg/jpeg_tables.dart';
 import '../tiff/compression/tiff_decompress.dart';
 import '../tiff/predictor.dart';
@@ -425,6 +426,10 @@ class SvsLevel {
   Future<Uint8List> readTileRgba(int tx, int ty) async {
     final rawTile = await _readRawTileBytes(tx, ty);
     if (rawTile.isEmpty) return rawTile;
+    // No-op/instant on native; on web this lazily instantiates the
+    // openjpeg_ffi WASM module the first time a JP2K tile is actually
+    // decoded, and is cheap to await again after that (internally cached).
+    await initOpenJpegWasm();
     final Jp2kImage decoded;
     try {
       decoded = decodeJ2k(rawTile);
@@ -464,10 +469,13 @@ class SvsLevel {
 class SvsFile {
   final TiffFile _tiff;
 
-  /// The path this file was opened from. Kept so a background isolate can
-  /// reopen the same file independently (see `TileWorkerPool`) — a
-  /// `RandomAccessFile` handle can't be shared across isolates.
-  final String path;
+  /// The path this file was opened from, or null if it was opened via
+  /// [openBytes]. Kept so a background isolate can reopen the same file
+  /// independently (see `TileWorkerPool`) — a file handle can't be shared
+  /// across isolates. When null, `TileWorkerPool` can't reopen this file, so
+  /// tiles are fetched/decoded on the calling isolate instead (see
+  /// `LodController`).
+  final String? path;
   final List<SvsLevel> levels;
   final List<SvsAssociatedImage> associatedImages;
   final SvsMetadata metadata;
@@ -481,12 +489,12 @@ class SvsFile {
   });
 
   static Future<SvsFile> open(String path) async {
-    final raf = await File(path).open(mode: FileMode.read);
+    final source = await openFileByteSource(path);
     final TiffFile tiff;
     try {
-      tiff = await TiffFile.open(raf);
+      tiff = await TiffFile.open(source);
     } catch (_) {
-      await raf.close();
+      await source.close();
       rethrow;
     }
 
@@ -498,7 +506,24 @@ class SvsFile {
     }
   }
 
-  static Future<SvsFile> _fromTiff(TiffFile tiff, String path) async {
+  /// Opens a slide already fully in memory as [bytes] — the entry point for
+  /// platforms with no filesystem (the web), and also useful natively for
+  /// bytes that already came from somewhere else (e.g. a network fetch).
+  /// The returned [SvsFile.path] is null, since there's no reopenable
+  /// filesystem path — see that field's doc comment for what that means for
+  /// background tile fetching.
+  static Future<SvsFile> openBytes(Uint8List bytes) async {
+    final source = MemoryByteSource(bytes);
+    final tiff = await TiffFile.open(source);
+    try {
+      return await _fromTiff(tiff, null);
+    } catch (_) {
+      await tiff.close();
+      rethrow;
+    }
+  }
+
+  static Future<SvsFile> _fromTiff(TiffFile tiff, String? path) async {
     if (tiff.ifds.isEmpty) {
       throw const SvsFormatException('File has no image directories');
     }

@@ -1,8 +1,13 @@
+@TestOn('vm')
+library;
+
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:svs/src/errors.dart';
+import 'package:svs/src/io/byte_source.dart';
+import 'package:svs/src/io/file_byte_source.dart';
 import 'package:svs/src/tiff/tiff_file.dart';
 import 'package:svs/src/tiff/tiff_types.dart';
 
@@ -10,30 +15,30 @@ import 'helpers/tiff_builder.dart';
 
 void main() {
   late Directory tempDir;
-  // Every raf opened via openBytes() below, closed in tearDown before the
+  // Every source opened via openBytes() below, closed in tearDown before the
   // temp dir is deleted. Windows locks open files, so deleting a directory
   // that still contains one throws — POSIX doesn't care, which is why this
   // went unnoticed until this ran in CI on Windows.
-  final openRafs = <RandomAccessFile>[];
+  final openSources = <RandomAccessByteSource>[];
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('svs_tiff_test_');
   });
 
   tearDown(() async {
-    for (final raf in openRafs) {
-      await raf.close();
+    for (final source in openSources) {
+      await source.close();
     }
-    openRafs.clear();
+    openSources.clear();
     await tempDir.delete(recursive: true);
   });
 
   Future<TiffFile> openBytes(Uint8List bytes) async {
     final file = File('${tempDir.path}/test.tiff');
     await file.writeAsBytes(bytes);
-    final raf = await file.open(mode: FileMode.read);
-    openRafs.add(raf);
-    return TiffFile.open(raf);
+    final source = await openFileByteSource(file.path);
+    openSources.add(source);
+    return TiffFile.open(source);
   }
 
   group('classic TIFF, little-endian', () {
