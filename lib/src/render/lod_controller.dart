@@ -51,7 +51,17 @@ class LodController extends ChangeNotifier {
     this.prefetchMargin = 1,
     this.diskCache,
     Future<TileWorkerPool>? pool,
-  }) : poolFuture = pool ?? TileWorkerPool.spawn(svsFile.path);
+  }) : poolFuture =
+           pool ??
+           (svsFile.path != null
+               ? TileWorkerPool.spawn(svsFile.path!)
+               : Future<TileWorkerPool>.error(
+                   UnsupportedError(
+                     'SvsFile has no filesystem path (opened via '
+                     'openBytes); tiles are fetched/decoded on the calling '
+                     'isolate instead.',
+                   ),
+                 ));
 
   // Value is the TileWorkerPool requestId once known, so a tile that
   // scrolls out of range can be actively cancelled instead of just having

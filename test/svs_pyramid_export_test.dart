@@ -1,3 +1,6 @@
+@TestOn('vm')
+library;
+
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -8,6 +11,7 @@ import 'package:svs/src/errors.dart';
 import 'package:svs/src/render/associated_image_decoder.dart';
 import 'package:svs/src/render/region_decoder.dart';
 import 'package:svs/src/render/svs_pyramid_export.dart';
+import 'package:svs/src/render/svs_pyramid_export_to_file.dart';
 import 'package:svs/src/svs/svs_file.dart';
 import 'package:svs/src/tiff/tiff_types.dart';
 
@@ -1132,6 +1136,13 @@ void main() {
     addTearDown(svs.close);
 
     final outPath = '${tempDir.path}/out.svs';
+    // exportSvsRegionAsSvsToFile only exists in the dart:io conditional-
+    // export branch (returns dart:io's File) — the analyzer resolves
+    // conditional exports to their default/stub branch absent a specific
+    // compile target, so it doesn't see this symbol even though it's
+    // genuinely present (and this test genuinely passes) on every native
+    // platform `flutter test` actually runs against.
+    // ignore: undefined_function
     final outFile = await exportSvsRegionAsSvsToFile(
       svs,
       path: outPath,
@@ -1298,6 +1309,8 @@ void main() {
         addTearDown(svs.close);
 
         final outPath = '${tempDir.path}/out.svs';
+        // See the comment on exportSvsRegionAsSvsToFile above.
+        // ignore: undefined_function
         final outFile = await exportSvsRegionAsSvsPreservingLevelsToFile(
           svs,
           path: outPath,

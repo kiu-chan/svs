@@ -1,3 +1,6 @@
+@TestOn('vm')
+library;
+
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -7,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:svs/src/errors.dart';
 import 'package:svs/src/render/image_export.dart';
+import 'package:svs/src/render/image_export_to_file.dart';
 import 'package:svs/src/svs/svs_file.dart';
 import 'package:svs/src/tiff/tiff_types.dart';
 
@@ -231,6 +235,13 @@ void main() {
     test('exportSvsLevelToFile writes the same bytes to disk', () async {
       final svs = await openTestFile(width: 64, height: 64);
       final outPath = '${tempDir.path}/level.png';
+      // exportSvsLevelToFile only exists in the dart:io conditional-export
+      // branch (returns dart:io's File) — the analyzer resolves conditional
+      // exports to their default/stub branch absent a specific compile
+      // target, so it doesn't see this symbol even though it's genuinely
+      // present (and this test genuinely passes) on every native platform
+      // `flutter test` actually runs against.
+      // ignore: undefined_function
       final file = await exportSvsLevelToFile(
         svs,
         path: outPath,
@@ -246,6 +257,8 @@ void main() {
     test('exportSvsRegionToFile writes the encoded region to disk', () async {
       final svs = await openTestFile(width: 512, height: 512);
       final outPath = '${tempDir.path}/region.png';
+      // See the comment on exportSvsLevelToFile above.
+      // ignore: undefined_function
       final file = await exportSvsRegionToFile(
         svs,
         path: outPath,

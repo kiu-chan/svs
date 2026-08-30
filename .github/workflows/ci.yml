@@ -32,3 +32,23 @@ jobs:
       # transitive dependency, proving the cross-platform toolchain wiring
       # end-to-end.
       - run: flutter test
+
+  # Compile-only check that the package (and the example app that depends on
+  # it) actually builds for web — `flutter test`/`flutter analyze` above
+  # don't catch this: dart:io/dart:isolate usage that leaks out of a
+  # conditional-export split fails here (a real web compile) even though it
+  # can look clean under `flutter analyze` (which doesn't resolve
+  # `dart.library.io` the same way a real per-platform compile does). No
+  # browser needed, so one OS is enough.
+  svs-web:
+    name: svs (web build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+        working-directory: example
+      - run: flutter build web
+        working-directory: example
