@@ -249,6 +249,11 @@ Future<void> streamSvsRegionAsSvs(
     for (var i = 0; i < builders.length - 1; i++) {
       builders[i].next = builders[i + 1];
     }
+    // The coarsest level's own extent isn't necessarily <= one tile once
+    // `levelCount` can truncate the cascade early, so its thumbnail is
+    // streamed into a separately-sized target band-by-band (see
+    // `_LevelBuilder._emitBand`) rather than assembled from the whole level.
+    builders.last.configureThumbnail(width: thumbWidth, height: thumbHeight);
 
     var rowsProcessed = 0;
     var srcY = 0;
@@ -276,23 +281,7 @@ Future<void> streamSvsRegionAsSvs(
       bandIndex++;
     }
     await builders[0].finish();
-    // The coarsest level (last in `builders`, the one with no `next`)
-    // accumulates its own raw bytes across every band it's emitted
-    // (`_LevelBuilder._emitBand`) — unlike every finer level, it's never
-    // guaranteed to fit in a single band once `levelCount` can truncate the
-    // cascade before the natural "fits in one tile" point. `finalImage`
-    // assembles the complete accumulated image lazily; resized down to fit
-    // one tile (a no-op when it already does) to match `thumbSpec` above.
-    var thumbnailImage = builders.last.finalImage!;
-    if (thumbnailImage.width != thumbWidth ||
-        thumbnailImage.height != thumbHeight) {
-      thumbnailImage = img.copyResize(
-        thumbnailImage,
-        width: thumbWidth,
-        height: thumbHeight,
-        interpolation: img.Interpolation.average,
-      );
-    }
+    final thumbnailImage = builders.last.finalImage!;
 
     await _writeSvsTail(
       sink: sink,
@@ -856,30 +845,31 @@ class _LevelBuilder {
   final _TileSink sink;
   _LevelBuilder? next;
 
-  /// Every band's raw bytes accumulated so far, for the coarsest level only
-  /// (the one with no [next] to cascade into instead) — a `levelCount` cap
-  /// can truncate the pyramid before the natural "fits in one tile" point,
-  /// so [_emitBand] may run more than once for that level, unlike before
-  /// this field existed. `null` until the first band is emitted.
-  BytesBuilder? _coarsestRawBytes;
-  int _coarsestHeight = 0;
+  /// The thumbnail this builder streams itself into as its bands arrive —
+  /// only set (via [configureThumbnail]) on the coarsest level (the one with
+  /// no [next] to cascade into instead). Pre-sized to the final thumbnail's
+  /// own dimensions, *not* this level's own (possibly much larger, once a
+  /// `levelCount` cap can truncate the pyramid before the natural "fits in
+  /// one tile" point) dimensions — each band is downsized to its
+  /// proportional slice of the thumbnail and composited in directly, so
+  /// peak memory never holds more than one band of this level at a time
+  /// (matching every other level's own memory bound), rather than the
+  /// now-not-necessarily-tiny whole level.
+  img.Image? _thumbnailTarget;
+  int _thumbRowsEmitted = 0;
 
-  /// The complete coarsest-level image, assembled from every band
-  /// accumulated into [_coarsestRawBytes] — `null` for any builder with a
-  /// [next] (only the coarsest level tracks this), or before [finish] has
-  /// run. The exported file's thumbnail is derived from this rather than
-  /// decoding/downsampling the source a second time.
-  img.Image? get finalImage {
-    final raw = _coarsestRawBytes;
-    if (raw == null) return null;
-    return img.Image.fromBytes(
-      width: spec.width,
-      height: _coarsestHeight,
-      bytes: raw.toBytes().buffer,
-      numChannels: 4,
-      order: img.ChannelOrder.rgba,
-    );
+  /// Allocates this (coarsest) level's thumbnail target at
+  /// [width]x[height] — called once, right after construction, only for
+  /// `builders.last` in [streamSvsRegionAsSvs].
+  void configureThumbnail({required int width, required int height}) {
+    _thumbnailTarget = img.Image(width: width, height: height, numChannels: 4);
   }
+
+  /// The finished thumbnail, once every one of this (coarsest) level's bands
+  /// has been streamed through [_emitBand] — `null` for any builder without
+  /// a [configureThumbnail] call (every level but the coarsest), or before
+  /// [finish] has run.
+  img.Image? get finalImage => _thumbnailTarget;
 
   final List<Uint8List> _pendingRows = [];
 
@@ -932,10 +922,39 @@ class _LevelBuilder {
       numChannels: 4,
       order: img.ChannelOrder.rgba,
     );
-    if (next == null) {
-      _coarsestRawBytes ??= BytesBuilder(copy: false);
-      _coarsestRawBytes!.add(bandBytes);
-      _coarsestHeight += bandHeight;
+    final thumbnailTarget = _thumbnailTarget;
+    if (thumbnailTarget != null) {
+      // Maps this band's row range within the coarsest level's full extent
+      // ([spec.height]) onto its proportional row range within the
+      // thumbnail's own (usually much shorter) extent, so bands tile the
+      // thumbnail exactly with no gap or overlap regardless of rounding.
+      final totalHeight = spec.height;
+      final outStart = totalHeight == 0
+          ? 0
+          : (_thumbRowsEmitted * thumbnailTarget.height / totalHeight).round();
+      final outEnd = totalHeight == 0
+          ? thumbnailTarget.height
+          : ((_thumbRowsEmitted + bandHeight) *
+                    thumbnailTarget.height /
+                    totalHeight)
+                .round();
+      _thumbRowsEmitted += bandHeight;
+      final outHeight = outEnd - outStart;
+      if (outHeight > 0 && outStart < thumbnailTarget.height) {
+        final resizedBand = img.copyResize(
+          bandImage,
+          width: thumbnailTarget.width,
+          height: outHeight,
+          interpolation: img.Interpolation.average,
+        );
+        img.compositeImage(
+          thumbnailTarget,
+          resizedBand,
+          dstX: 0,
+          dstY: outStart,
+          blend: img.BlendMode.direct,
+        );
+      }
     }
     for (var tx = 0; tx < spec.tilesAcrossX; tx++) {
       final tileLeft = tx * spec.tileWidth;

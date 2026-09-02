@@ -1185,76 +1185,8 @@ void main() {
       );
     });
 
-    test('null (the default) matches the natural halve-to-one-tile count',
-        () async {
-      final file = await _buildSingleTileJpegFixture(
-        tempDir,
-        'src.svs',
-        size: 800,
-        color: (30, 180, 90),
-      );
-      final svs = await SvsFile.open(file.path);
-      addTearDown(svs.close);
-
-      final withoutParam = await exportSvsRegionAsSvs(
-        svs,
-        level: 0,
-        x: 0,
-        y: 0,
-        width: 800,
-        height: 800,
-        tileSize: 128,
-      );
-      final withNull = await exportSvsRegionAsSvs(
-        svs,
-        level: 0,
-        x: 0,
-        y: 0,
-        width: 800,
-        height: 800,
-        tileSize: 128,
-        levelCount: null,
-      );
-      expect(withNull, equals(withoutParam));
-    });
-
-    test('a value >= the natural count is a no-op (clamped down to it)',
-        () async {
-      final file = await _buildSingleTileJpegFixture(
-        tempDir,
-        'src.svs',
-        size: 800,
-        color: (30, 180, 90),
-      );
-      final svs = await SvsFile.open(file.path);
-      addTearDown(svs.close);
-
-      final natural = await exportSvsRegionAsSvs(
-        svs,
-        level: 0,
-        x: 0,
-        y: 0,
-        width: 800,
-        height: 800,
-        tileSize: 128,
-      );
-      final overshoot = await exportSvsRegionAsSvs(
-        svs,
-        level: 0,
-        x: 0,
-        y: 0,
-        width: 800,
-        height: 800,
-        tileSize: 128,
-        levelCount: 1000,
-      );
-      expect(overshoot, equals(natural));
-    });
-
     test(
-      'a smaller value truncates the cascade, including a correctly '
-      'resized thumbnail even though the coarsest level now exceeds one '
-      'tile',
+      'null (the default) matches the natural halve-to-one-tile count',
       () async {
         final file = await _buildSingleTileJpegFixture(
           tempDir,
@@ -1265,10 +1197,7 @@ void main() {
         final svs = await SvsFile.open(file.path);
         addTearDown(svs.close);
 
-        // Natural (tileSize 128) cascade for an 800x800 source: 800, 400,
-        // 200, 100 — 4 levels. Capping at 2 leaves the coarsest generated
-        // level at 400x400, well over one 128x128 tile.
-        final outBytes = await exportSvsRegionAsSvs(
+        final withoutParam = await exportSvsRegionAsSvs(
           svs,
           level: 0,
           x: 0,
@@ -1276,7 +1205,148 @@ void main() {
           width: 800,
           height: 800,
           tileSize: 128,
-          levelCount: 2,
+        );
+        final withNull = await exportSvsRegionAsSvs(
+          svs,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 800,
+          height: 800,
+          tileSize: 128,
+          levelCount: null,
+        );
+        expect(withNull, equals(withoutParam));
+      },
+    );
+
+    test(
+      'a value >= the natural count is a no-op (clamped down to it)',
+      () async {
+        final file = await _buildSingleTileJpegFixture(
+          tempDir,
+          'src.svs',
+          size: 800,
+          color: (30, 180, 90),
+        );
+        final svs = await SvsFile.open(file.path);
+        addTearDown(svs.close);
+
+        final natural = await exportSvsRegionAsSvs(
+          svs,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 800,
+          height: 800,
+          tileSize: 128,
+        );
+        final overshoot = await exportSvsRegionAsSvs(
+          svs,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 800,
+          height: 800,
+          tileSize: 128,
+          levelCount: 1000,
+        );
+        expect(overshoot, equals(natural));
+      },
+    );
+
+    test('a smaller value truncates the cascade, including a correctly '
+        'resized thumbnail even though the coarsest level now exceeds one '
+        'tile', () async {
+      final file = await _buildSingleTileJpegFixture(
+        tempDir,
+        'src.svs',
+        size: 800,
+        color: (30, 180, 90),
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+
+      // Natural (tileSize 128) cascade for an 800x800 source: 800, 400,
+      // 200, 100 — 4 levels. Capping at 2 leaves the coarsest generated
+      // level at 400x400, well over one 128x128 tile.
+      final outBytes = await exportSvsRegionAsSvs(
+        svs,
+        level: 0,
+        x: 0,
+        y: 0,
+        width: 800,
+        height: 800,
+        tileSize: 128,
+        levelCount: 2,
+      );
+
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
+
+      expect(roundTripped.levels.length, 2);
+      expect(roundTripped.levels[0].width, 800);
+      expect(roundTripped.levels[0].height, 800);
+      expect(roundTripped.levels[1].width, 400);
+      expect(roundTripped.levels[1].height, 400);
+
+      final thumbnails = roundTripped.associatedImages.where(
+        (a) => a.kind == AssociatedImageKind.thumbnail,
+      );
+      expect(thumbnails, hasLength(1));
+      final thumbnail = thumbnails.single;
+      // Fit within one 128x128 tile (not the coarsest level's own
+      // 400x400) — the bug this test guards against: before accumulating
+      // the coarsest level's full raw bytes, the thumbnail silently ended
+      // up as just that level's last emitted row-band instead.
+      expect(thumbnail.width, lessThanOrEqualTo(128));
+      expect(thumbnail.height, lessThanOrEqualTo(128));
+      expect(thumbnail.isDecodable, isTrue);
+
+      final decoded = await decodeAssociatedImage(thumbnail);
+      addTearDown(decoded.dispose);
+      final data = await decoded.toByteData();
+      final pixels = data!.buffer.asUint8List();
+      // A solid fill should survive downsampling/resizing regardless.
+      expect(pixels[0], closeTo(30, 10));
+      expect(pixels[1], closeTo(180, 10));
+      expect(pixels[2], closeTo(90, 10));
+      final lastPixel = pixels.length - 4;
+      expect(pixels[lastPixel], closeTo(30, 10));
+      expect(pixels[lastPixel + 1], closeTo(180, 10));
+      expect(pixels[lastPixel + 2], closeTo(90, 10));
+    });
+
+    test(
+      'levelCount: 1 streams the thumbnail band-by-band from the full '
+      'source level itself, without ever holding it whole in memory',
+      () async {
+        final file = await _buildSingleTileJpegFixture(
+          tempDir,
+          'src.svs',
+          size: 640,
+          color: (30, 180, 90),
+        );
+        final svs = await SvsFile.open(file.path);
+        addTearDown(svs.close);
+
+        // The most extreme truncation: no downsampled levels at all, so the
+        // "coarsest" level (the one the thumbnail is built from) is level 0
+        // itself, streamed across 5 bands (640 / tileSize 128 = 5) — this is
+        // the scenario that would blow up memory if the thumbnail were still
+        // assembled by accumulating the whole level's raw bytes rather than
+        // compositing each band's own downsized slice directly.
+        final outBytes = await exportSvsRegionAsSvs(
+          svs,
+          level: 0,
+          x: 0,
+          y: 0,
+          width: 640,
+          height: 640,
+          tileSize: 128,
+          levelCount: 1,
         );
 
         final outFile = File('${tempDir.path}/out.svs');
@@ -1284,21 +1354,15 @@ void main() {
         final roundTripped = await SvsFile.open(outFile.path);
         addTearDown(roundTripped.close);
 
-        expect(roundTripped.levels.length, 2);
-        expect(roundTripped.levels[0].width, 800);
-        expect(roundTripped.levels[0].height, 800);
-        expect(roundTripped.levels[1].width, 400);
-        expect(roundTripped.levels[1].height, 400);
+        expect(roundTripped.levels.length, 1);
+        expect(roundTripped.levels[0].width, 640);
+        expect(roundTripped.levels[0].height, 640);
 
         final thumbnails = roundTripped.associatedImages.where(
           (a) => a.kind == AssociatedImageKind.thumbnail,
         );
         expect(thumbnails, hasLength(1));
         final thumbnail = thumbnails.single;
-        // Fit within one 128x128 tile (not the coarsest level's own
-        // 400x400) — the bug this test guards against: before accumulating
-        // the coarsest level's full raw bytes, the thumbnail silently ended
-        // up as just that level's last emitted row-band instead.
         expect(thumbnail.width, lessThanOrEqualTo(128));
         expect(thumbnail.height, lessThanOrEqualTo(128));
         expect(thumbnail.isDecodable, isTrue);
@@ -1307,7 +1371,6 @@ void main() {
         addTearDown(decoded.dispose);
         final data = await decoded.toByteData();
         final pixels = data!.buffer.asUint8List();
-        // A solid fill should survive downsampling/resizing regardless.
         expect(pixels[0], closeTo(30, 10));
         expect(pixels[1], closeTo(180, 10));
         expect(pixels[2], closeTo(90, 10));
