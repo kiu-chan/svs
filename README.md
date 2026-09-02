@@ -39,6 +39,14 @@ never loaded into memory, however large the slide.
   valid multi-level pyramidal `.svs` file — not a flat raster image —
   openable by this package (or any other tiled-TIFF/OpenSlide-aware tool)
   and pannable/zoomable like any other slide.
+* **Rebuild a slide's own pyramid level count** (`rebuildSvsPyramid`, or
+  `rebuildSvsPyramidToFile`/`rebuildSvsPyramidInPlace` to write straight to
+  disk instead of returning bytes): re-encode a whole existing slide with
+  more levels (auto-computed for a smooth, evenly-2x-stepped zoom, since real
+  slides often aren't evenly stepped) or fewer (an explicit, smaller
+  `levelCount`) — either to a new file next to the original, or overwriting
+  it in place. An `effort` setting trades throughput for how much room the
+  rebuild leaves the UI thread to stay responsive while it runs.
 * **Brightness/contrast/shadow/highlight adjustment**
   (`SvsImageAdjustments`): applied identically live (cheap to change every
   frame — a GPU color filter) and on export, so preview and output always
@@ -85,12 +93,15 @@ filesystem and no background isolates:
   re-decoding a tile you're actively panning back and forth over.
 * **No `*ToFile` export helpers**: `exportSvsRegionToFile`,
   `exportAssociatedImageToFile`, `exportSvsLevelToFile`,
-  `exportSvsRegionAsSvsToFile`, and
-  `exportSvsRegionAsSvsPreservingLevelsToFile` all write to a filesystem
-  path and so aren't available on the web. Use their byte-returning
-  siblings (`exportSvsRegion`, `exportAssociatedImage`, `exportSvsLevel`,
-  `exportSvsRegionAsSvs`, `exportSvsRegionAsSvsPreservingLevels`) and trigger
-  a browser download yourself with the resulting bytes.
+  `exportSvsRegionAsSvsToFile`, `exportSvsRegionAsSvsPreservingLevelsToFile`,
+  `rebuildSvsPyramidToFile`, and `rebuildSvsPyramidInPlace` all write to a
+  filesystem path (the last two of those don't even fit within `SvsFile
+  .openBytes`'s pathless model, since there's no source file to overwrite)
+  and so aren't available on the web. Use their byte-returning siblings
+  (`exportSvsRegion`, `exportAssociatedImage`, `exportSvsLevel`,
+  `exportSvsRegionAsSvs`, `exportSvsRegionAsSvsPreservingLevels`,
+  `rebuildSvsPyramid`) and trigger a browser download yourself with the
+  resulting bytes.
 
 ## Getting started
 
@@ -423,6 +434,99 @@ tradeoff: an output level's size directly reflects the source's own level at
 that resolution, so it isn't guaranteed to be exactly half the previous
 level or to land on a clean `tileSize` boundary at its edges — it's exactly
 as clean (or ungainly) as the source's real pyramid is.
+
+### Rebuilding a slide's pyramid level count
+
+`rebuildSvsPyramid` applies the same re-encoding `exportSvsRegionAsSvs` does
+to a crop, but to a whole existing slide, as a first-class "change this
+slide's own level count" operation:
+
+```dart
+final rebuiltBytes = await rebuildSvsPyramid(svsFile);
+await File('rebuilt.svs').writeAsBytes(rebuiltBytes);
+
+// Or straight to a new file next to the original:
+await rebuildSvsPyramidToFile(
+  svsFile,
+  path: '${svsFile.path}.rebuilt.svs',
+);
+```
+
+By default (`levelCount: null`) it regenerates the maximal, smoothest
+2x-halved cascade down to one tile. For a source whose own pyramid has few or
+unevenly-spaced levels — real Aperio slides are often not 2x-stepped, e.g.
+downsample 1x, 4x, 16x, which can make zooming feel like it "pops" between
+levels instead of smoothly resolving — this *increases* the level count and
+evens out the downsample steps in between. Pass an explicit, smaller
+`levelCount` to go the other way and *decrease* the level count instead (the
+file gets smaller and faster to rebuild; the coarsest level just won't
+necessarily fit in one tile anymore). A `levelCount` at or above the natural
+count is a no-op, since there's nothing meaningful to generate beyond it:
+
+```dart
+await rebuildSvsPyramidToFile(
+  svsFile,
+  path: '${svsFile.path}.fewer_levels.svs',
+  levelCount: 4, // fewer/coarser-capped levels than the natural cascade
+);
+```
+
+`tileSize`, `compression`/`quality`/`jp2kCompressionRatio`,
+`adjustments`, `includeLabelAndMacroImages`, `includeSourceMetadata`, and
+`onProgress` all mean the same thing as on `exportSvsRegionAsSvs`.
+`matchSourceCompression` defaults to `true` here (the opposite of
+`exportSvsRegionAsSvs`'s crop-oriented default) — rebuilding a whole slide's
+pyramid should stay visually/size-equivalent to the source unless you say
+otherwise.
+
+#### Modifying the original file, or a new one next to it
+
+`rebuildSvsPyramidToFile` (above) always writes a brand new file at whatever
+`path` you give it — the "new file next to the original" option, leaving the
+source untouched. `rebuildSvsPyramidInPlace` is the "modify the original
+file" option instead: it overwrites `svsFile`'s own source file safely (via a
+temp file streamed alongside it, only swapped in once the rebuild fully
+succeeds), and returns a freshly-reopened `SvsFile` on the result:
+
+```dart
+// svsFile must have been opened with SvsFile.open (a real path) —
+// SvsFile.openBytes has no file to overwrite.
+svsFile = await rebuildSvsPyramidInPlace(svsFile, levelCount: 6);
+```
+
+`svsFile` is closed as part of this call once the rebuild itself succeeds —
+don't keep using the instance you passed in; the returned `SvsFile` replaces
+it. If anything goes wrong (mid-rebuild, or during the final swap), the
+original file is left completely untouched and the temp file is cleaned up.
+This function, like `rebuildSvsPyramidToFile`, is native platforms only
+(where a real filesystem exists) — on the web, use the byte-returning
+`rebuildSvsPyramid` together with a browser download instead.
+
+#### Controlling RAM/CPU usage while rebuilding
+
+Every function in this section (and `exportSvsRegionAsSvs`/
+`exportSvsRegionAsSvsPreservingLevels`) takes an `effort`
+(`SvsPyramidRebuildEffort`) parameter that trades throughput for how much
+room the operation leaves the UI thread — relevant because this all runs on
+the main isolate (tile decoding needs `dart:ui`), so a long rebuild can
+otherwise compete with rendering frames:
+
+```dart
+await rebuildSvsPyramidInPlace(
+  svsFile,
+  effort: SvsPyramidRebuildEffort.low, // smoothest UI, slowest rebuild
+);
+```
+
+`.balanced` (the default) matches this package's historical behavior; `.low`
+actively cedes more time between row-bands for the smoothest experience on a
+foreground screen; `.high` yields less often for the fastest throughput. None
+of the three settings change peak memory, which is already bounded by
+design — a couple of tile-row bands per level in flight at once, never the
+whole image — regardless of `effort`. For genuine RAM control, prefer the
+disk-streamed `rebuildSvsPyramidToFile`/`rebuildSvsPyramidInPlace` over the
+in-memory `rebuildSvsPyramid`, which needs as many bytes of RAM as the whole
+rebuilt file.
 
 ### Annotations
 

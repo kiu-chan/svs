@@ -31,6 +31,49 @@ enum SvsExportCompression {
   jpeg2000,
 }
 
+/// How aggressively the streaming functions in this file yield control back
+/// to the event loop while building a pyramid — a knob for the tradeoff
+/// between UI smoothness (this all runs on the main isolate — tile decoding
+/// needs `dart:ui`) and raw throughput. Doesn't change peak RAM, which is
+/// already bounded by design (a couple of tile-row bands per level in
+/// flight at once, never the whole image) regardless of this setting — for
+/// genuine RAM control, prefer a disk-streamed `...ToFile`/`...InPlace`
+/// export over an in-memory one.
+enum SvsPyramidRebuildEffort {
+  /// Cedes extra time to the event loop between every row-band (a short
+  /// `Future.delayed`, not just a bare microtask yield) — the smoothest
+  /// choice when a foreground UI must stay responsive throughout (e.g. a
+  /// whole-slide `rebuildSvsPyramid...` call), at some throughput cost.
+  low,
+
+  /// Yields once per row-band via a bare microtask (`Future(() {})`) —
+  /// this package's long-standing default behavior.
+  balanced,
+
+  /// Yields only every 4th row-band — less overhead, fastest, while still
+  /// never fully blocking the event loop for an unbounded stretch.
+  high,
+}
+
+/// Yields control back to the event loop according to [effort] — called
+/// once per row-band by the streaming loops below, so a long-running
+/// export/rebuild doesn't starve the UI thread. [bandIndex] is a 0-based
+/// count of bands processed so far (across the whole export, not reset per
+/// level), used by [SvsPyramidRebuildEffort.high] to skip most yields.
+Future<void> _yieldForEffort(
+  SvsPyramidRebuildEffort effort,
+  int bandIndex,
+) async {
+  switch (effort) {
+    case SvsPyramidRebuildEffort.low:
+      await Future.delayed(const Duration(milliseconds: 1));
+    case SvsPyramidRebuildEffort.balanced:
+      await Future(() {});
+    case SvsPyramidRebuildEffort.high:
+      if (bandIndex % 4 == 0) await Future(() {});
+  }
+}
+
 /// Streams `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsToFile`'s pyramid
 /// into [sink] (already open — this function neither opens nor closes
 /// anything filesystem-specific, only [sink] itself, so it's usable from a
@@ -54,6 +97,8 @@ Future<void> streamSvsRegionAsSvs(
   required bool includeLabelAndMacroImages,
   required bool includeSourceMetadata,
   required void Function(double progress)? onProgress,
+  int? levelCount,
+  SvsPyramidRebuildEffort effort = SvsPyramidRebuildEffort.balanced,
 }) async {
   if (level < 0 || level >= svsFile.levels.length) {
     throw SvsFormatException(
@@ -62,6 +107,9 @@ Future<void> streamSvsRegionAsSvs(
   }
   if (width <= 0 || height <= 0) {
     throw ArgumentError('width/height must be positive, got ${width}x$height');
+  }
+  if (levelCount != null && levelCount < 1) {
+    throw ArgumentError.value(levelCount, 'levelCount', 'must be >= 1');
   }
   final pixelCount = width * height;
   if (maxPixels != null && pixelCount > maxPixels) {
@@ -109,7 +157,24 @@ Future<void> streamSvsRegionAsSvs(
       ? ApCompression.jp2k
       : ApCompression.newJpeg;
 
-  final levelDims = computePyramidLevelDims(width, height, effectiveTileSize);
+  // `computePyramidLevelDims` already produces the maximal-smoothness 2x
+  // cascade (halved down to one tile) — the "auto-increase levels" case
+  // needs no extra logic beyond that default. `levelCount`, when given,
+  // truncates that natural cascade early (fewer, coarser-capped levels —
+  // the "decrease levels" case); when it's `>=` the natural count it's a
+  // no-op, since generating anything finer than the natural cascade isn't
+  // meaningful.
+  final naturalLevelDims = computePyramidLevelDims(
+    width,
+    height,
+    effectiveTileSize,
+  );
+  final levelDims = levelCount == null
+      ? naturalLevelDims
+      : naturalLevelDims.sublist(
+          0,
+          math.min(levelCount, naturalLevelDims.length),
+        );
   final specs = [
     for (var i = 0; i < levelDims.length; i++)
       PyramidLevelSpec(
@@ -134,20 +199,29 @@ Future<void> streamSvsRegionAsSvs(
             : null,
       ),
   ];
-  // The coarsest generated level (last in `specs`, already <= tileSize in
-  // both dimensions) doubles as the exported file's thumbnail — an
-  // associated image `SvsImageView`'s minimap needs, same as a real Aperio
-  // file carries, which a plain pyramid-levels-only export previously never
-  // wrote at all.
+  // The coarsest generated level doubles as the exported file's thumbnail —
+  // an associated image `SvsImageView`'s minimap needs, same as a real
+  // Aperio file carries, which a plain pyramid-levels-only export
+  // previously never wrote at all. Normally that level is already
+  // `<= effectiveTileSize` in both dimensions (by construction — see
+  // `computePyramidLevelDims`), but a `levelCount` cap can truncate the
+  // cascade before that point, so the thumbnail is still explicitly fit to
+  // one tile here (matching `streamSvsRegionAsSvsPreservingLevels`, whose
+  // coarsest level is never guaranteed to fit either).
+  final (thumbWidth, thumbHeight) = _fitWithinSquare(
+    levelDims.last.$1,
+    levelDims.last.$2,
+    effectiveTileSize,
+  );
   final thumbSpec = AssociatedImageSpec(
-    width: levelDims.last.$1,
-    height: levelDims.last.$2,
+    width: thumbWidth,
+    height: thumbHeight,
     compression: ApCompression.newJpeg,
     photometricInterpretation: 6, // YCbCr — img.encodeJpg's normal output
     samplesPerPixel: 3,
     bitsPerSample: const [8, 8, 8],
     predictor: 1,
-    rowsPerStrip: levelDims.last.$2,
+    rowsPerStrip: thumbHeight,
     stripCount: 1,
   );
   final extraSpecs = [
@@ -178,6 +252,7 @@ Future<void> streamSvsRegionAsSvs(
 
     var rowsProcessed = 0;
     var srcY = 0;
+    var bandIndex = 0;
     while (srcY < height) {
       final bandHeight = math.min(effectiveTileSize, height - srcY);
       final raw = await readSvsRegionRawRgba(
@@ -197,16 +272,27 @@ Future<void> streamSvsRegionAsSvs(
       rowsProcessed += bandHeight;
       srcY += bandHeight;
       onProgress?.call(rowsProcessed / height);
-      // Yield between bands so the UI (this all runs on the main isolate —
-      // tile decoding needs `dart:ui`) can still service a frame.
-      await Future(() {});
+      await _yieldForEffort(effort, bandIndex);
+      bandIndex++;
     }
     await builders[0].finish();
-    // Captured after every level (including the coarsest, which never has a
-    // `next`) has finished — `_LevelBuilder._emitBand` only ever runs once
-    // for the coarsest level, covering its whole (already <= tileSize)
-    // extent in one band, so this is the complete thumbnail image.
-    final thumbnailImage = builders.last.finalImage!;
+    // The coarsest level (last in `builders`, the one with no `next`)
+    // accumulates its own raw bytes across every band it's emitted
+    // (`_LevelBuilder._emitBand`) — unlike every finer level, it's never
+    // guaranteed to fit in a single band once `levelCount` can truncate the
+    // cascade before the natural "fits in one tile" point. `finalImage`
+    // assembles the complete accumulated image lazily; resized down to fit
+    // one tile (a no-op when it already does) to match `thumbSpec` above.
+    var thumbnailImage = builders.last.finalImage!;
+    if (thumbnailImage.width != thumbWidth ||
+        thumbnailImage.height != thumbHeight) {
+      thumbnailImage = img.copyResize(
+        thumbnailImage,
+        width: thumbWidth,
+        height: thumbHeight,
+        interpolation: img.Interpolation.average,
+      );
+    }
 
     await _writeSvsTail(
       sink: sink,
@@ -299,6 +385,7 @@ Future<void> streamSvsRegionAsSvsPreservingLevels(
   required bool includeLabelAndMacroImages,
   required bool includeSourceMetadata,
   required void Function(double progress)? onProgress,
+  SvsPyramidRebuildEffort effort = SvsPyramidRebuildEffort.balanced,
 }) async {
   if (level < 0 || level >= svsFile.levels.length) {
     throw SvsFormatException(
@@ -428,6 +515,7 @@ Future<void> streamSvsRegionAsSvsPreservingLevels(
     final tileSink = _TileSink(sink, specs.length);
     final totalRows = regions.fold<int>(0, (sum, r) => sum + r.height);
     var rowsProcessedGlobal = 0;
+    var bandIndex = 0;
 
     // Accumulates the coarsest level's own decoded bytes as they stream by,
     // so the thumbnail can be built from them afterwards without decoding
@@ -472,9 +560,8 @@ Future<void> streamSvsRegionAsSvsPreservingLevels(
         rowsProcessedGlobal += bandHeight;
         srcY += bandHeight;
         onProgress?.call(rowsProcessedGlobal / totalRows);
-        // Yield between bands so the UI (this all runs on the main isolate —
-        // tile decoding needs `dart:ui`) can still service a frame.
-        await Future(() {});
+        await _yieldForEffort(effort, bandIndex);
+        bandIndex++;
       }
       await builder.finish();
     }
@@ -769,13 +856,30 @@ class _LevelBuilder {
   final _TileSink sink;
   _LevelBuilder? next;
 
-  /// Set only on the coarsest level (the one with no [next] to cascade
-  /// into) — that level's single [_emitBand] call covers its whole extent
-  /// (already `<= tileSize` in both dimensions by construction), so this
-  /// ends up being the complete coarsest-level image once [finish] returns.
-  /// The exported file's thumbnail reuses it rather than decoding/
-  /// downsampling the source a second time.
-  img.Image? finalImage;
+  /// Every band's raw bytes accumulated so far, for the coarsest level only
+  /// (the one with no [next] to cascade into instead) — a `levelCount` cap
+  /// can truncate the pyramid before the natural "fits in one tile" point,
+  /// so [_emitBand] may run more than once for that level, unlike before
+  /// this field existed. `null` until the first band is emitted.
+  BytesBuilder? _coarsestRawBytes;
+  int _coarsestHeight = 0;
+
+  /// The complete coarsest-level image, assembled from every band
+  /// accumulated into [_coarsestRawBytes] — `null` for any builder with a
+  /// [next] (only the coarsest level tracks this), or before [finish] has
+  /// run. The exported file's thumbnail is derived from this rather than
+  /// decoding/downsampling the source a second time.
+  img.Image? get finalImage {
+    final raw = _coarsestRawBytes;
+    if (raw == null) return null;
+    return img.Image.fromBytes(
+      width: spec.width,
+      height: _coarsestHeight,
+      bytes: raw.toBytes().buffer,
+      numChannels: 4,
+      order: img.ChannelOrder.rgba,
+    );
+  }
 
   final List<Uint8List> _pendingRows = [];
 
@@ -828,7 +932,11 @@ class _LevelBuilder {
       numChannels: 4,
       order: img.ChannelOrder.rgba,
     );
-    if (next == null) finalImage = bandImage;
+    if (next == null) {
+      _coarsestRawBytes ??= BytesBuilder(copy: false);
+      _coarsestRawBytes!.add(bandBytes);
+      _coarsestHeight += bandHeight;
+    }
     for (var tx = 0; tx < spec.tilesAcrossX; tx++) {
       final tileLeft = tx * spec.tileWidth;
       final tileW = math.min(spec.tileWidth, spec.width - tileLeft);

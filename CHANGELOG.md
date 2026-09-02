@@ -1,3 +1,40 @@
+## 1.3.0
+
+* **Rebuild a slide's own pyramid level count.** `rebuildSvsPyramid`/
+  `rebuildSvsPyramidToFile`/`rebuildSvsPyramidInPlace` re-encode a whole
+  existing slide with a different number of pyramid levels — either more
+  (auto-computed, evenly 2x-stepped, so a source with few or unevenly-spaced
+  levels, e.g. a real Aperio downsample sequence of 1x/4x/16x, zooms
+  smoothly instead of visibly "popping" between levels) or fewer (an
+  explicit, smaller `levelCount`). `rebuildSvsPyramidToFile` writes a new
+  file next to the original; `rebuildSvsPyramidInPlace` overwrites the
+  source file itself, safely (a temp file streamed alongside it, only
+  swapped in — and the original only touched — once the rebuild fully
+  succeeds). Both are native-only, like this package's other `*ToFile`
+  helpers; `rebuildSvsPyramid` (byte-returning) works everywhere.
+* `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsToFile` gain a `levelCount`
+  parameter: `null` (default, unchanged behavior) keeps the natural
+  halve-to-one-tile cascade; an explicit smaller value truncates it early —
+  the same "decrease the level count" building block `rebuildSvsPyramid`
+  uses internally, also usable directly on a crop.
+* `SvsPyramidRebuildEffort` (`low`/`balanced`/`high`, default `balanced`):
+  a new `effort` parameter on every pyramid-building export/rebuild
+  function, controlling how aggressively the streaming loop yields to the
+  event loop between row-bands — this all runs on the main isolate (tile
+  decoding needs `dart:ui`), so a long-running rebuild can otherwise compete
+  with rendering frames. `.low` trades throughput for the smoothest
+  possible foreground UI; `.high` trades the reverse; `.balanced` matches
+  this package's historical (only) behavior before this release. None of
+  the three change peak memory, which every streaming export already
+  bounds by design regardless.
+* Fixed a latent bug the `levelCount` truncation above would otherwise have
+  exposed: `exportSvsRegionAsSvs`'s generated thumbnail assumed its coarsest
+  pyramid level always finished in a single row-band (true only because that
+  level was previously always `<= tileSize`). It now accumulates the
+  coarsest level's full pixel data before building the thumbnail from it —
+  matching `exportSvsRegionAsSvsPreservingLevels`, whose coarsest level was
+  never guaranteed to fit in one band either.
+
 ## 1.2.0
 
 * **Web support.** `svs` now runs on Flutter Web, with the same API surface

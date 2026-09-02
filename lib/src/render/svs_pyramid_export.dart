@@ -6,7 +6,8 @@ import 'image_adjustments.dart';
 import 'region_decoder.dart';
 import 'svs_pyramid_export_core.dart';
 
-export 'svs_pyramid_export_core.dart' show SvsExportCompression;
+export 'svs_pyramid_export_core.dart'
+    show SvsExportCompression, SvsPyramidRebuildEffort;
 
 /// Crops [level]'s (`x`,`y`)-`width`x`height` rectangle — see [readSvsRegion]
 /// for coordinate semantics — and re-encodes it as a brand new, valid
@@ -84,6 +85,23 @@ export 'svs_pyramid_export_core.dart' show SvsExportCompression;
 /// concern, prefer `exportSvsRegionAsSvsToFile` (native platforms only,
 /// where a real filesystem exists), which streams straight to disk instead.
 ///
+/// [levelCount], if given, caps how many levels the output pyramid gets —
+/// `null` (default) keeps the natural halve-to-one-tile count described
+/// above (already the maximum useful/smoothest number of levels), while a
+/// smaller value truncates the cascade early, so the coarsest generated
+/// level isn't necessarily `<= tileSize` anymore. A value `>=` the natural
+/// count is a no-op (there's nothing meaningful to generate beyond it). See
+/// `rebuildSvsPyramid` for a convenience wrapper that applies this whole
+/// pipeline to an entire existing slide rather than a crop, specifically to
+/// change its level count.
+///
+/// [effort] controls how aggressively the streaming loop yields to the
+/// event loop between row-bands — [SvsPyramidRebuildEffort.balanced] (the
+/// default) matches this function's historical behavior; `.low` trades
+/// throughput for a smoother foreground UI during a long export, `.high`
+/// trades the reverse. Doesn't affect peak memory, which this function's
+/// streaming design already bounds regardless.
+///
 /// Must run on the main isolate, like [readSvsRegion].
 Future<Uint8List> exportSvsRegionAsSvs(
   SvsFile svsFile, {
@@ -101,6 +119,8 @@ Future<Uint8List> exportSvsRegionAsSvs(
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
   bool includeLabelAndMacroImages = true,
   bool includeSourceMetadata = true,
+  int? levelCount,
+  SvsPyramidRebuildEffort effort = SvsPyramidRebuildEffort.balanced,
   void Function(double progress)? onProgress,
 }) async {
   final sink = MemoryByteSink();
@@ -121,6 +141,8 @@ Future<Uint8List> exportSvsRegionAsSvs(
     adjustments: adjustments,
     includeLabelAndMacroImages: includeLabelAndMacroImages,
     includeSourceMetadata: includeSourceMetadata,
+    levelCount: levelCount,
+    effort: effort,
     onProgress: onProgress,
   );
   return sink.toBytes();
@@ -153,7 +175,11 @@ Future<Uint8List> exportSvsRegionAsSvs(
 /// one compression scheme/quality for their whole pyramid). Likewise
 /// [adjustments], [includeLabelAndMacroImages], [includeSourceMetadata],
 /// [maxPixels] (checked against [level]'s own `width x height` only, since
-/// every coarser level is smaller by construction), and [onProgress].
+/// every coarser level is smaller by construction), [onProgress], and
+/// [effort] (see [exportSvsRegionAsSvs]'s doc on that one — this level-count-
+/// preserving function has no `levelCount` equivalent, since its level count
+/// is inherently tied to the source's own; use [exportSvsRegionAsSvs] or
+/// `rebuildSvsPyramid` instead if changing it is the goal).
 ///
 /// Must run on the main isolate, like [readSvsRegion].
 Future<Uint8List> exportSvsRegionAsSvsPreservingLevels(
@@ -172,6 +198,7 @@ Future<Uint8List> exportSvsRegionAsSvsPreservingLevels(
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
   bool includeLabelAndMacroImages = true,
   bool includeSourceMetadata = true,
+  SvsPyramidRebuildEffort effort = SvsPyramidRebuildEffort.balanced,
   void Function(double progress)? onProgress,
 }) async {
   final sink = MemoryByteSink();
@@ -192,6 +219,7 @@ Future<Uint8List> exportSvsRegionAsSvsPreservingLevels(
     adjustments: adjustments,
     includeLabelAndMacroImages: includeLabelAndMacroImages,
     includeSourceMetadata: includeSourceMetadata,
+    effort: effort,
     onProgress: onProgress,
   );
   return sink.toBytes();

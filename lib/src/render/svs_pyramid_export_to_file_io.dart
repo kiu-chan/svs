@@ -27,6 +27,8 @@ Future<File> exportSvsRegionAsSvsToFile(
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
   bool includeLabelAndMacroImages = true,
   bool includeSourceMetadata = true,
+  int? levelCount,
+  SvsPyramidRebuildEffort effort = SvsPyramidRebuildEffort.balanced,
   void Function(double progress)? onProgress,
 }) async {
   final file = File(path);
@@ -47,6 +49,8 @@ Future<File> exportSvsRegionAsSvsToFile(
     adjustments: adjustments,
     includeLabelAndMacroImages: includeLabelAndMacroImages,
     includeSourceMetadata: includeSourceMetadata,
+    levelCount: levelCount,
+    effort: effort,
     onProgress: onProgress,
   );
   return file;
@@ -73,6 +77,7 @@ Future<File> exportSvsRegionAsSvsPreservingLevelsToFile(
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
   bool includeLabelAndMacroImages = true,
   bool includeSourceMetadata = true,
+  SvsPyramidRebuildEffort effort = SvsPyramidRebuildEffort.balanced,
   void Function(double progress)? onProgress,
 }) async {
   final file = File(path);
@@ -93,6 +98,7 @@ Future<File> exportSvsRegionAsSvsPreservingLevelsToFile(
     adjustments: adjustments,
     includeLabelAndMacroImages: includeLabelAndMacroImages,
     includeSourceMetadata: includeSourceMetadata,
+    effort: effort,
     onProgress: onProgress,
   );
   return file;
