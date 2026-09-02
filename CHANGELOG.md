@@ -30,10 +30,13 @@
 * Fixed a latent bug the `levelCount` truncation above would otherwise have
   exposed: `exportSvsRegionAsSvs`'s generated thumbnail assumed its coarsest
   pyramid level always finished in a single row-band (true only because that
-  level was previously always `<= tileSize`). It now accumulates the
-  coarsest level's full pixel data before building the thumbnail from it —
-  matching `exportSvsRegionAsSvsPreservingLevels`, whose coarsest level was
-  never guaranteed to fit in one band either.
+  level was previously always `<= tileSize`). It's now streamed into the
+  thumbnail band-by-band as each row-band of the coarsest level arrives
+  (each band downsized to its proportional slice and composited in place),
+  instead of assuming a single band — so a `levelCount` small enough to
+  leave the coarsest level much larger than one tile (down to the whole
+  slide itself, at `levelCount: 1`) still gets a correct thumbnail without
+  ever holding that whole level's raw pixels in memory at once.
 
 ## 1.2.0
 
