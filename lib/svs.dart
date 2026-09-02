@@ -15,6 +15,8 @@ export 'src/render/region_decoder.dart';
 export 'src/render/svs_image_view.dart';
 export 'src/render/svs_pyramid_export.dart';
 export 'src/render/svs_pyramid_export_to_file.dart';
+export 'src/render/svs_pyramid_rebuild.dart';
+export 'src/render/svs_pyramid_rebuild_to_file.dart';
 export 'src/svs/svs_file.dart';
 export 'src/svs/svs_file_info.dart';
 export 'src/svs/svs_metadata.dart';
