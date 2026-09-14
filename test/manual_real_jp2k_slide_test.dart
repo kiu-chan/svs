@@ -52,6 +52,10 @@ void main() {
       region.dispose();
 
       // Export that same region to every supported format.
+      final exportDir = Directory.systemTemp.createTempSync(
+        'svs_manual_test_export',
+      );
+      addTearDown(() => exportDir.delete(recursive: true));
       for (final format in SvsImageFormat.values) {
         final bytes = await exportSvsRegion(
           svs,
@@ -66,9 +70,9 @@ void main() {
         // ignore: avoid_print
         print('exportSvsRegion($format): ${bytes.length} bytes');
 
-        final outPath =
-            '/private/tmp/claude-501/-Users-khanh-Documents-code-mobile-svs/97f51c42-75c6-4807-957e-fda291727ee5/scratchpad/export_out/region.${format.name}';
-        await File(outPath).writeAsBytes(bytes);
+        await File(
+          '${exportDir.path}/region.${format.name}',
+        ).writeAsBytes(bytes);
       }
 
       // Export the coarsest pyramid level whole (should be small enough to
