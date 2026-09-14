@@ -32,27 +32,35 @@ Future<File> exportSvsRegionAsSvsToFile(
   void Function(double progress)? onProgress,
 }) async {
   final file = File(path);
-  await streamSvsRegionAsSvs(
-    svsFile,
-    sink: await _openFileSink(file),
-    level: level,
-    x: x,
-    y: y,
-    width: width,
-    height: height,
-    tileSize: tileSize,
-    quality: quality,
-    compression: compression,
-    jp2kCompressionRatio: jp2kCompressionRatio,
-    matchSourceCompression: matchSourceCompression,
-    maxPixels: maxPixels,
-    adjustments: adjustments,
-    includeLabelAndMacroImages: includeLabelAndMacroImages,
-    includeSourceMetadata: includeSourceMetadata,
-    levelCount: levelCount,
-    effort: effort,
-    onProgress: onProgress,
-  );
+  final sink = await _openFileSink(file);
+  try {
+    await streamSvsRegionAsSvs(
+      svsFile,
+      sink: sink,
+      level: level,
+      x: x,
+      y: y,
+      width: width,
+      height: height,
+      tileSize: tileSize,
+      quality: quality,
+      compression: compression,
+      jp2kCompressionRatio: jp2kCompressionRatio,
+      matchSourceCompression: matchSourceCompression,
+      maxPixels: maxPixels,
+      adjustments: adjustments,
+      includeLabelAndMacroImages: includeLabelAndMacroImages,
+      includeSourceMetadata: includeSourceMetadata,
+      levelCount: levelCount,
+      effort: effort,
+      onProgress: onProgress,
+    );
+  } finally {
+    // The core only closes the sink once it reaches its own try/finally, so
+    // an argument-validation throw before that point would otherwise leak
+    // the handle — which on Windows blocks deleting the partial file.
+    await sink.close();
+  }
   return file;
 }
 
@@ -81,26 +89,32 @@ Future<File> exportSvsRegionAsSvsPreservingLevelsToFile(
   void Function(double progress)? onProgress,
 }) async {
   final file = File(path);
-  await streamSvsRegionAsSvsPreservingLevels(
-    svsFile,
-    sink: await _openFileSink(file),
-    level: level,
-    x: x,
-    y: y,
-    width: width,
-    height: height,
-    tileSize: tileSize,
-    quality: quality,
-    compression: compression,
-    jp2kCompressionRatio: jp2kCompressionRatio,
-    matchSourceCompression: matchSourceCompression,
-    maxPixels: maxPixels,
-    adjustments: adjustments,
-    includeLabelAndMacroImages: includeLabelAndMacroImages,
-    includeSourceMetadata: includeSourceMetadata,
-    effort: effort,
-    onProgress: onProgress,
-  );
+  final sink = await _openFileSink(file);
+  try {
+    await streamSvsRegionAsSvsPreservingLevels(
+      svsFile,
+      sink: sink,
+      level: level,
+      x: x,
+      y: y,
+      width: width,
+      height: height,
+      tileSize: tileSize,
+      quality: quality,
+      compression: compression,
+      jp2kCompressionRatio: jp2kCompressionRatio,
+      matchSourceCompression: matchSourceCompression,
+      maxPixels: maxPixels,
+      adjustments: adjustments,
+      includeLabelAndMacroImages: includeLabelAndMacroImages,
+      includeSourceMetadata: includeSourceMetadata,
+      effort: effort,
+      onProgress: onProgress,
+    );
+  } finally {
+    // See the matching comment in exportSvsRegionAsSvsToFile.
+    await sink.close();
+  }
   return file;
 }
 
@@ -112,6 +126,7 @@ Future<RandomAccessByteSink> _openFileSink(File file) async {
 
 class _FileByteSink implements RandomAccessByteSink {
   final RandomAccessFile _raf;
+  bool _closed = false;
   _FileByteSink(this._raf);
 
   @override
@@ -123,6 +138,13 @@ class _FileByteSink implements RandomAccessByteSink {
   @override
   Future<int> position() => _raf.position();
 
+  /// Idempotent: the streaming core closes the sink itself on its normal
+  /// path, and the `*ToFile` wrappers close it again to cover early throws —
+  /// a second `RandomAccessFile.close` would fail with "File closed".
   @override
-  Future<void> close() => _raf.close();
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    await _raf.close();
+  }
 }
