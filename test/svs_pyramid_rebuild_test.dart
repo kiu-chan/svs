@@ -60,41 +60,45 @@ void main() {
   late Directory tempDir;
 
   setUp(() async {
-    tempDir = await Directory.systemTemp.createTemp('svs_pyramid_rebuild_test_');
+    tempDir = await Directory.systemTemp.createTemp(
+      'svs_pyramid_rebuild_test_',
+    );
   });
 
   tearDown(() async {
     await tempDir.delete(recursive: true);
   });
 
-  test('rebuildSvsPyramid regenerates the whole slide as a smoother pyramid',
-      () async {
-    final file = await _buildSingleTileJpegFixture(
-      tempDir,
-      'src.svs',
-      size: 512,
-      color: (10, 150, 220),
-    );
-    final svs = await SvsFile.open(file.path);
-    addTearDown(svs.close);
-    // A source with only one on-disk level (no coarser levels at all).
-    expect(svs.levels.length, 1);
+  test(
+    'rebuildSvsPyramid regenerates the whole slide as a smoother pyramid',
+    () async {
+      final file = await _buildSingleTileJpegFixture(
+        tempDir,
+        'src.svs',
+        size: 512,
+        color: (10, 150, 220),
+      );
+      final svs = await SvsFile.open(file.path);
+      addTearDown(svs.close);
+      // A source with only one on-disk level (no coarser levels at all).
+      expect(svs.levels.length, 1);
 
-    final outBytes = await rebuildSvsPyramid(svs, tileSize: 256);
+      final outBytes = await rebuildSvsPyramid(svs, tileSize: 256);
 
-    final outFile = File('${tempDir.path}/out.svs');
-    await outFile.writeAsBytes(outBytes);
-    final roundTripped = await SvsFile.open(outFile.path);
-    addTearDown(roundTripped.close);
+      final outFile = File('${tempDir.path}/out.svs');
+      await outFile.writeAsBytes(outBytes);
+      final roundTripped = await SvsFile.open(outFile.path);
+      addTearDown(roundTripped.close);
 
-    expect(roundTripped.levels[0].width, 512);
-    expect(roundTripped.levels[0].height, 512);
-    // Auto (levelCount: null) generates the full smooth cascade down to one
-    // tile — more levels than the single-level source had.
-    expect(roundTripped.levels.length, 2);
-    expect(roundTripped.levels[1].width, 256);
-    expect(roundTripped.levels[1].height, 256);
-  });
+      expect(roundTripped.levels[0].width, 512);
+      expect(roundTripped.levels[0].height, 512);
+      // Auto (levelCount: null) generates the full smooth cascade down to one
+      // tile — more levels than the single-level source had.
+      expect(roundTripped.levels.length, 2);
+      expect(roundTripped.levels[1].width, 256);
+      expect(roundTripped.levels[1].height, 256);
+    },
+  );
 
   test('rebuildSvsPyramid levelCount decreases the level count relative to '
       'the auto/natural cascade', () async {
@@ -107,11 +111,7 @@ void main() {
     final svs = await SvsFile.open(file.path);
     addTearDown(svs.close);
 
-    final outBytes = await rebuildSvsPyramid(
-      svs,
-      tileSize: 128,
-      levelCount: 2,
-    );
+    final outBytes = await rebuildSvsPyramid(svs, tileSize: 128, levelCount: 2);
 
     final outFile = File('${tempDir.path}/out.svs');
     await outFile.writeAsBytes(outBytes);
@@ -150,60 +150,64 @@ void main() {
   });
 
   group('rebuildSvsPyramidInPlace', () {
-    test('overwrites the source file and returns a reopened handle on it',
-        () async {
-      final file = await _buildSingleTileJpegFixture(
-        tempDir,
-        'src.svs',
-        size: 800,
-        color: (30, 180, 90),
-      );
-      final originalPath = file.path;
-      final svs = await SvsFile.open(originalPath);
-      // Not `addTearDown(svs.close)` — rebuildSvsPyramidInPlace closes it
-      // internally once the rebuild succeeds.
+    test(
+      'overwrites the source file and returns a reopened handle on it',
+      () async {
+        final file = await _buildSingleTileJpegFixture(
+          tempDir,
+          'src.svs',
+          size: 800,
+          color: (30, 180, 90),
+        );
+        final originalPath = file.path;
+        final svs = await SvsFile.open(originalPath);
+        // Not `addTearDown(svs.close)` — rebuildSvsPyramidInPlace closes it
+        // internally once the rebuild succeeds.
 
-      // ignore: undefined_function
-      final rebuilt = await rebuildSvsPyramidInPlace(
-        svs,
-        tileSize: 128,
-        levelCount: 2,
-      );
-      addTearDown(rebuilt.close);
-
-      expect(rebuilt.path, originalPath);
-      expect(rebuilt.levels.length, 2);
-      expect(rebuilt.levels[0].width, 800);
-      expect(rebuilt.levels[1].width, 400);
-
-      // No leftover temp file.
-      expect(await File('$originalPath.rebuild.tmp').exists(), isFalse);
-
-      // The path itself now really does hold the rebuilt file, independent
-      // of the returned handle.
-      final reopened = await SvsFile.open(originalPath);
-      addTearDown(reopened.close);
-      expect(reopened.levels.length, 2);
-    });
-
-    test('throws for a file opened via openBytes (no path to overwrite)',
-        () async {
-      final file = await _buildSingleTileJpegFixture(
-        tempDir,
-        'src.svs',
-        size: 64,
-        color: (200, 100, 50),
-      );
-      final bytes = await file.readAsBytes();
-      final svs = await SvsFile.openBytes(bytes);
-      addTearDown(svs.close);
-
-      expect(
         // ignore: undefined_function
-        () => rebuildSvsPyramidInPlace(svs),
-        throwsArgumentError,
-      );
-    });
+        final rebuilt = await rebuildSvsPyramidInPlace(
+          svs,
+          tileSize: 128,
+          levelCount: 2,
+        );
+        addTearDown(rebuilt.close);
+
+        expect(rebuilt.path, originalPath);
+        expect(rebuilt.levels.length, 2);
+        expect(rebuilt.levels[0].width, 800);
+        expect(rebuilt.levels[1].width, 400);
+
+        // No leftover temp file.
+        expect(await File('$originalPath.rebuild.tmp').exists(), isFalse);
+
+        // The path itself now really does hold the rebuilt file, independent
+        // of the returned handle.
+        final reopened = await SvsFile.open(originalPath);
+        addTearDown(reopened.close);
+        expect(reopened.levels.length, 2);
+      },
+    );
+
+    test(
+      'throws for a file opened via openBytes (no path to overwrite)',
+      () async {
+        final file = await _buildSingleTileJpegFixture(
+          tempDir,
+          'src.svs',
+          size: 64,
+          color: (200, 100, 50),
+        );
+        final bytes = await file.readAsBytes();
+        final svs = await SvsFile.openBytes(bytes);
+        addTearDown(svs.close);
+
+        expect(
+          // ignore: undefined_function
+          () => rebuildSvsPyramidInPlace(svs),
+          throwsArgumentError,
+        );
+      },
+    );
 
     test('a failed rebuild leaves the original file untouched and cleans up '
         'the temp file', () async {

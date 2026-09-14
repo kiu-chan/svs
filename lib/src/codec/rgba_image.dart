@@ -102,7 +102,10 @@ class RgbaImage {
     var to = 0;
     for (var oy = 0; oy < newHeight; oy++) {
       final y0 = math.min((oy * scaleY).floor(), height - 1);
-      final y1 = math.max(y0 + 1, math.min(((oy + 1) * scaleY).floor(), height));
+      final y1 = math.max(
+        y0 + 1,
+        math.min(((oy + 1) * scaleY).floor(), height),
+      );
       for (var ox = 0; ox < newWidth; ox++) {
         final x0 = spanStart[ox];
         final x1 = spanEnd[ox];

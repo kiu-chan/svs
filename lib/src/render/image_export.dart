@@ -119,7 +119,7 @@ Future<Uint8List> _encodeInBackground(
 ///
 /// This produces a single flat raster, so it inherently needs a
 /// `width * height * 4`-byte buffer at some point — unlike
-/// [exportSvsRegionAsSvsToFile] (a *tiled* pyramidal `.svs` file), that
+/// `exportSvsRegionAsSvsToFile` (a *tiled* pyramidal `.svs` file), that
 /// floor can't be streamed away. For a crop large enough that this matters,
 /// prefer that function instead, if a tiled slide file is an acceptable
 /// output shape. [onProgress] (0.0-1.0), if given, is invoked as each source
@@ -200,7 +200,7 @@ const defaultExportMaxPixels = 64000000;
 /// of attempting an export over a size you've budgeted for. Prefer
 /// [exportSvsRegion] for a specific rectangle, or a coarser (higher-index,
 /// smaller) level, when you don't actually need the full-resolution export
-/// — or [exportSvsRegionAsSvsToFile] for a very large export, which streams
+/// — or `exportSvsRegionAsSvsToFile` for a very large export, which streams
 /// instead of needing the whole level in memory.
 ///
 /// Must run on the main isolate, like [readSvsRegion].

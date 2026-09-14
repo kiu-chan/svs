@@ -28,5 +28,23 @@ const deflateDistanceExtraBits = [
 /// Order a dynamic block's header lists the code-length code's own lengths
 /// in.
 const deflateCodeLengthOrder = [
-  16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+  16,
+  17,
+  18,
+  0,
+  8,
+  7,
+  9,
+  6,
+  10,
+  5,
+  11,
+  4,
+  12,
+  3,
+  13,
+  2,
+  14,
+  1,
+  15,
 ];

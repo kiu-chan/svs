@@ -186,8 +186,7 @@ class JpegEncoder {
     for (var k = 0; k < 64; k++) {
       // Round to nearest: the offset keeps the value positive, so truncating
       // acts as floor (libjpeg's own trick).
-      final q =
-          (block[zigzagOrder[k]] * divisors[k] + 16384.5).toInt() - 16384;
+      final q = (block[zigzagOrder[k]] * divisors[k] + 16384.5).toInt() - 16384;
       // 8-bit samples keep every coefficient within these bounds; the clamp
       // only guards against floating-point rounding at the extremes.
       quantized[k] = q < -1023 ? -1023 : (q > 1023 ? 1023 : q);

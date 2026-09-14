@@ -136,11 +136,14 @@ void main() {
         }
       });
 
-      test('deflateZlib output decodes with dart:io and inflateZlib ($name)', () {
-        final compressed = deflateZlib(data);
-        expect(zlib.decode(compressed), data);
-        expect(inflateZlib(compressed), data);
-      });
+      test(
+        'deflateZlib output decodes with dart:io and inflateZlib ($name)',
+        () {
+          final compressed = deflateZlib(data);
+          expect(zlib.decode(compressed), data);
+          expect(inflateZlib(compressed), data);
+        },
+      );
     }
 
     test('deflateZlib compresses redundancy and barely expands noise', () {
@@ -206,14 +209,10 @@ void main() {
 
     test('rgbBytes drops alpha and pads with black', () {
       expect(
-        numbered(2, 1).rgbBytes(
-          x: 1,
-          y: 0,
-          width: 1,
-          height: 1,
-          outWidth: 2,
-          outHeight: 2,
-        ),
+        numbered(
+          2,
+          1,
+        ).rgbBytes(x: 1, y: 0, width: 1, height: 1, outWidth: 2, outHeight: 2),
         [4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       );
     });
@@ -231,9 +230,11 @@ void main() {
         6, 11, 16, 21, 151, 151, 151, 151, //
       ]);
       expect(
-        RgbaImage(1, 1, Uint8List.fromList([9, 8, 7, 6]))
-            .resizeAverage(3, 2)
-            .pixels,
+        RgbaImage(
+          1,
+          1,
+          Uint8List.fromList([9, 8, 7, 6]),
+        ).resizeAverage(3, 2).pixels,
         List.generate(24, (i) => 9 - i % 4),
       );
     });
@@ -295,20 +296,23 @@ void main() {
       });
     }
 
-    test('JPEG clamps quality and encodes dense noise at every quality', () async {
-      expect(JpegEncoder(quality: 0).quality, 1);
-      expect(JpegEncoder(quality: 500).quality, 100);
-      final image = _testImage(64, 64);
-      for (final quality in [1, 50, 100]) {
-        final decoded = await _decodeWithEngine(
-          JpegEncoder(quality: quality).encode(image),
-        );
-        expect(decoded.length, image.pixels.length);
-        if (quality == 100) {
-          expect(_meanAbsoluteRgbError(decoded, image.pixels), lessThan(3));
+    test(
+      'JPEG clamps quality and encodes dense noise at every quality',
+      () async {
+        expect(JpegEncoder(quality: 0).quality, 1);
+        expect(JpegEncoder(quality: 500).quality, 100);
+        final image = _testImage(64, 64);
+        for (final quality in [1, 50, 100]) {
+          final decoded = await _decodeWithEngine(
+            JpegEncoder(quality: quality).encode(image),
+          );
+          expect(decoded.length, image.pixels.length);
+          if (quality == 100) {
+            expect(_meanAbsoluteRgbError(decoded, image.pixels), lessThan(3));
+          }
         }
-      }
-    });
+      },
+    );
 
     test('WebP handles flat, checkerboard and very wide images', () async {
       final cases = {

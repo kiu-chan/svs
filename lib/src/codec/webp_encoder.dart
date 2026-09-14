@@ -32,7 +32,25 @@ const _planeCodeLeft = 2;
 
 /// Order a normal prefix code lists its code-length code's lengths in.
 const _codeLengthOrder = [
-  17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+  17,
+  18,
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  16,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
 ];
 
 /// Encodes [image] as a lossless WebP: a VP8L bitstream in a RIFF container.

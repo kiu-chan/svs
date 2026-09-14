@@ -26,9 +26,13 @@ RgbaImage _testImage(int width, int height, {bool opaque = false}) {
     for (var x = 0; x < width; x++) {
       final p = (y * width + x) * 4;
       final noisy = y >= height ~/ 2;
-      pixels[p] = noisy ? random.nextInt(256) : x * 255 ~/ math.max(1, width - 1);
+      pixels[p] = noisy
+          ? random.nextInt(256)
+          : x * 255 ~/ math.max(1, width - 1);
       pixels[p + 1] = noisy ? random.nextInt(256) : 90;
-      pixels[p + 2] = noisy ? random.nextInt(256) : y * 255 ~/ math.max(1, height - 1);
+      pixels[p + 2] = noisy
+          ? random.nextInt(256)
+          : y * 255 ~/ math.max(1, height - 1);
       pixels[p + 3] = opaque ? 255 : (x * 29 + y * 13) & 0xff;
     }
   }

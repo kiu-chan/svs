@@ -118,8 +118,7 @@ class _Deflater {
   }
 
   int _hash(int i) =>
-      ((_data[i] << 10) ^ (_data[i + 1] << 5) ^ _data[i + 2]) &
-      (_hashSize - 1);
+      ((_data[i] << 10) ^ (_data[i + 1] << 5) ^ _data[i + 2]) & (_hashSize - 1);
 
   void _insert(int position, int hash) {
     _previous[position & (_windowSize - 1)] = _head[hash];
@@ -177,7 +176,8 @@ class _Deflater {
     }
     for (var c = 0; c < 30; c++) {
       dynamicBits +=
-          _distanceCounts[c] * (distanceLengths[c] + deflateDistanceExtraBits[c]);
+          _distanceCounts[c] *
+          (distanceLengths[c] + deflateDistanceExtraBits[c]);
     }
     final storedLength = end - _blockStart;
     final storedBlocks = math.max(1, (storedLength + 65534) ~/ 65535);
@@ -224,7 +224,10 @@ class _Deflater {
       final distance = symbol & 0xffff;
       final lengthCode = _lengthCodes[length];
       _writer
-        ..writeBits(literalCodes[257 + lengthCode], literalLengths[257 + lengthCode])
+        ..writeBits(
+          literalCodes[257 + lengthCode],
+          literalLengths[257 + lengthCode],
+        )
         ..writeBits(
           length - deflateLengthBase[lengthCode],
           deflateLengthExtraBits[lengthCode],

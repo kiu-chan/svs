@@ -70,8 +70,7 @@ class _RowFilters {
   /// output is the row itself.
   final List<Uint8List> rows;
 
-  _RowFilters(this.stride)
-    : rows = List.generate(5, (_) => Uint8List(stride));
+  _RowFilters(this.stride) : rows = List.generate(5, (_) => Uint8List(stride));
 
   /// Filters `row[rowStart..]` against `above[aboveStart..]` with every
   /// filter type in one pass and returns the type whose residuals, read as

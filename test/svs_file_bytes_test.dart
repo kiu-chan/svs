@@ -56,25 +56,28 @@ Uint8List _buildSparseSingleLevelSvs({
 }
 
 void main() {
-  test('openBytes parses levels/metadata the same as open(path) does', () async {
-    final bytes = _buildSparseSingleLevelSvs(
-      width: 800,
-      height: 600,
-      tileSize: 256,
-    );
+  test(
+    'openBytes parses levels/metadata the same as open(path) does',
+    () async {
+      final bytes = _buildSparseSingleLevelSvs(
+        width: 800,
+        height: 600,
+        tileSize: 256,
+      );
 
-    final svs = await SvsFile.openBytes(bytes);
-    addTearDown(svs.close);
+      final svs = await SvsFile.openBytes(bytes);
+      addTearDown(svs.close);
 
-    expect(svs.path, isNull);
-    expect(svs.levels, hasLength(1));
-    expect(svs.levels[0].width, 800);
-    expect(svs.levels[0].height, 600);
-    expect(svs.levels[0].tilesAcrossX, 4);
-    expect(svs.levels[0].tilesAcrossY, 3);
-    expect(svs.metadata.appMag, 20);
-    expect(svs.metadata.mppX, closeTo(0.4990, 1e-9));
-  });
+      expect(svs.path, isNull);
+      expect(svs.levels, hasLength(1));
+      expect(svs.levels[0].width, 800);
+      expect(svs.levels[0].height, 600);
+      expect(svs.levels[0].tilesAcrossX, 4);
+      expect(svs.levels[0].tilesAcrossY, 3);
+      expect(svs.metadata.appMag, 20);
+      expect(svs.metadata.mppX, closeTo(0.4990, 1e-9));
+    },
+  );
 
   test('openBytes reads tile bytes the same as open(path) does', () async {
     final bytes = _buildSparseSingleLevelSvs(

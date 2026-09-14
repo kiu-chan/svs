@@ -69,16 +69,17 @@ void main() {
 
     final mode = Platform.environment['SVS_MODE'] ?? 'new-file';
     if (mode != 'new-file' && mode != 'in-place') {
-      throw ArgumentError('SVS_MODE must be "new-file" or "in-place", got: $mode');
+      throw ArgumentError(
+        'SVS_MODE must be "new-file" or "in-place", got: $mode',
+      );
     }
 
     final levelCount = _optionalInt('SVS_LEVEL_COUNT');
     final tileSize = _optionalInt('SVS_TILE_SIZE');
     final quality = _optionalInt('SVS_QUALITY') ?? 90;
     final jp2kRatio = _optionalDouble('SVS_JP2K_RATIO') ?? 0;
-    final matchSourceCompression = _optionalBool(
-      'SVS_MATCH_SOURCE_COMPRESSION',
-    ) ?? true;
+    final matchSourceCompression =
+        _optionalBool('SVS_MATCH_SOURCE_COMPRESSION') ?? true;
     final compression = switch (Platform.environment['SVS_COMPRESSION']) {
       null || 'jpeg' => SvsExportCompression.jpeg,
       'jpeg2000' => SvsExportCompression.jpeg2000,
@@ -178,7 +179,8 @@ int? _optionalInt(String name) {
   final value = Platform.environment[name];
   if (value == null || value.isEmpty) return null;
   final parsed = int.tryParse(value);
-  if (parsed == null) throw ArgumentError('$name must be an integer, got: $value');
+  if (parsed == null)
+    throw ArgumentError('$name must be an integer, got: $value');
   return parsed;
 }
 
@@ -186,7 +188,8 @@ double? _optionalDouble(String name) {
   final value = Platform.environment[name];
   if (value == null || value.isEmpty) return null;
   final parsed = double.tryParse(value);
-  if (parsed == null) throw ArgumentError('$name must be a number, got: $value');
+  if (parsed == null)
+    throw ArgumentError('$name must be a number, got: $value');
   return parsed;
 }
 
@@ -198,7 +201,6 @@ bool? _optionalBool(String name) {
   throw ArgumentError('$name must be "true" or "false", got: $value');
 }
 
-String _withoutSvsExtension(String path) =>
-    path.toLowerCase().endsWith('.svs')
+String _withoutSvsExtension(String path) => path.toLowerCase().endsWith('.svs')
     ? path.substring(0, path.length - 4)
     : path;

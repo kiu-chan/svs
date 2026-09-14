@@ -27,10 +27,9 @@ class TileEncoderPool {
       1,
       math.min(_maxWorkers, Platform.numberOfProcessors - 1),
     );
-    final workers = await Future.wait(
-      [for (var i = 0; i < count; i++) _Worker.spawn(encoding)],
-      cleanUp: (worker) => worker.close(),
-    );
+    final workers = await Future.wait([
+      for (var i = 0; i < count; i++) _Worker.spawn(encoding),
+    ], cleanUp: (worker) => worker.close());
     return TileEncoderPool._(workers);
   }
 
@@ -133,12 +132,7 @@ class _Worker {
     switch (message) {
       case SendPort requests:
         _ready.complete(requests);
-      case (
-        int id,
-        List<Uint8List>? tiles,
-        Object? error,
-        String? stackTrace,
-      ):
+      case (int id, List<Uint8List>? tiles, Object? error, String? stackTrace):
         final completer = _pending.remove(id);
         if (completer == null) return;
         if (error == null) {
