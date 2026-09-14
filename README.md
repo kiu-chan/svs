@@ -107,7 +107,7 @@ filesystem and no background isolates:
 
 ```yaml
 dependencies:
-  svs: ^1.2.0
+  svs: ^1.3.0
 ```
 
 ## Usage
