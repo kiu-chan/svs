@@ -179,8 +179,9 @@ int? _optionalInt(String name) {
   final value = Platform.environment[name];
   if (value == null || value.isEmpty) return null;
   final parsed = int.tryParse(value);
-  if (parsed == null)
+  if (parsed == null) {
     throw ArgumentError('$name must be an integer, got: $value');
+  }
   return parsed;
 }
 
@@ -188,8 +189,9 @@ double? _optionalDouble(String name) {
   final value = Platform.environment[name];
   if (value == null || value.isEmpty) return null;
   final parsed = double.tryParse(value);
-  if (parsed == null)
+  if (parsed == null) {
     throw ArgumentError('$name must be a number, got: $value');
+  }
   return parsed;
 }
 
