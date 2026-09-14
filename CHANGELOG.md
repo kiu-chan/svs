@@ -1,4 +1,4 @@
-## 1.3.0
+## 1.4.0
 
 * **No more `image` or `archive` dependencies.** The encoders behind
   `encodeSvsImage`/`exportSvs*` (PNG, JPEG, BMP, TIFF, lossless WebP), the
@@ -29,6 +29,9 @@
 * Exports a format can't represent — WebP over 16383 px per side, JPEG over
   65535 — now throw `ArgumentError` up front instead of producing a corrupt
   file.
+
+## 1.3.0
+
 * **Rebuild a slide's own pyramid level count.** `rebuildSvsPyramid`/
   `rebuildSvsPyramidToFile`/`rebuildSvsPyramidInPlace` re-encode a whole
   existing slide with a different number of pyramid levels — either more
@@ -49,9 +52,9 @@
 * `SvsPyramidRebuildEffort` (`low`/`balanced`/`high`, default `balanced`):
   a new `effort` parameter on every pyramid-building export/rebuild
   function, controlling how aggressively the streaming loop yields to the
-  event loop between row-bands — tile decoding runs on the main isolate (it
-  needs `dart:ui`), so a long-running rebuild can otherwise compete with
-  rendering frames. `.low` trades throughput for the smoothest
+  event loop between row-bands — this all runs on the main isolate (tile
+  decoding needs `dart:ui`), so a long-running rebuild can otherwise compete
+  with rendering frames. `.low` trades throughput for the smoothest
   possible foreground UI; `.high` trades the reverse; `.balanced` matches
   this package's historical (only) behavior before this release. None of
   the three change peak memory, which every streaming export already
