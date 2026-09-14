@@ -1,6 +1,9 @@
+@TestOn('vm')
+library;
+
+import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:svs/src/tiff/compression/deflate_decoder.dart';
 
@@ -11,7 +14,7 @@ void main() {
       final original = Uint8List.fromList(
         List.generate(2000, (i) => (i * 37) % 256),
       );
-      final compressed = ZLibEncoder().encodeBytes(original);
+      final compressed = Uint8List.fromList(zlib.encode(original));
 
       expect(decodeTiffDeflate(compressed), original);
     },

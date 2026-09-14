@@ -2,9 +2,14 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:image/image.dart' as img;
-
+import '../codec/bmp_encoder.dart';
+import '../codec/jpeg_encoder.dart';
+import '../codec/png_encoder.dart';
+import '../codec/rgba_image.dart';
+import '../codec/tiff_encoder.dart';
+import '../codec/webp_encoder.dart';
 import '../errors.dart';
+import '../io/background_task.dart';
 import '../svs/svs_file.dart';
 import 'associated_image_decoder.dart';
 import 'image_adjustments.dart';
@@ -49,6 +54,12 @@ enum SvsImageFormat {
 /// decoded pixels before encoding — the same brightness/contrast/shadow/
 /// highlight adjustment [SvsImageView.adjustments] applies live.
 ///
+/// On native platforms the adjustment and encoding run on a background
+/// isolate, so even a multi-second encode of a large export doesn't freeze
+/// the UI; the raw pixels are copied to that isolate once, briefly holding a
+/// second `width * height * 4`-byte buffer. On the web, which has no
+/// isolates, they run on the calling thread.
+///
 /// Does not dispose [image] — the caller still owns it.
 Future<Uint8List> encodeSvsImage(
   ui.Image image, {
@@ -56,6 +67,9 @@ Future<Uint8List> encodeSvsImage(
   int quality = 92,
   SvsImageAdjustments adjustments = SvsImageAdjustments.none,
 }) async {
+  if (format == SvsImageFormat.jpeg && (quality < 1 || quality > 100)) {
+    throw ArgumentError.value(quality, 'quality', 'must be between 1 and 100');
+  }
   final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
   if (data == null) {
     throw StateError(
@@ -66,36 +80,37 @@ Future<Uint8List> encodeSvsImage(
     data.offsetInBytes,
     data.lengthInBytes,
   );
-  adjustments.applyToRgba(pixels);
-  final decoded = img.Image.fromBytes(
-    width: image.width,
-    height: image.height,
-    bytes: pixels.buffer,
-    bytesOffset: pixels.offsetInBytes,
-    numChannels: 4,
-    order: img.ChannelOrder.rgba,
+  return _encodeInBackground(
+    pixels,
+    image.width,
+    image.height,
+    format,
+    quality,
+    adjustments,
   );
-
-  switch (format) {
-    case SvsImageFormat.png:
-      return img.encodePng(decoded);
-    case SvsImageFormat.jpeg:
-      if (quality < 1 || quality > 100) {
-        throw ArgumentError.value(
-          quality,
-          'quality',
-          'must be between 1 and 100',
-        );
-      }
-      return img.encodeJpg(decoded, quality: quality);
-    case SvsImageFormat.bmp:
-      return img.encodeBmp(decoded);
-    case SvsImageFormat.tiff:
-      return img.encodeTiff(decoded);
-    case SvsImageFormat.webp:
-      return img.encodeWebP(decoded);
-  }
 }
+
+/// [encodeSvsImage]'s CPU-heavy half, kept in its own function so the
+/// closure sent to the background isolate captures only these sendable
+/// values — never the `dart:ui` image, which can't cross isolates.
+Future<Uint8List> _encodeInBackground(
+  Uint8List pixels,
+  int width,
+  int height,
+  SvsImageFormat format,
+  int quality,
+  SvsImageAdjustments adjustments,
+) => runInBackground(() {
+  adjustments.applyToRgba(pixels);
+  final rgba = RgbaImage(width, height, pixels);
+  return switch (format) {
+    SvsImageFormat.png => encodePng(rgba),
+    SvsImageFormat.jpeg => JpegEncoder(quality: quality).encode(rgba),
+    SvsImageFormat.bmp => encodeBmp(rgba),
+    SvsImageFormat.tiff => encodeTiff(rgba),
+    SvsImageFormat.webp => encodeWebP(rgba),
+  };
+});
 
 /// Crops [level]'s (`x`,`y`)-`width`x`height` rectangle — see [readSvsRegion]
 /// for coordinate semantics — and encodes it straight to [format]'s bytes: a
@@ -176,9 +191,10 @@ const defaultExportMaxPixels = 64000000;
 /// Encodes an entire pyramid [level] to [format]'s bytes.
 ///
 /// Level 0 of a real slide is routinely 50,000-150,000px per side —
-/// decoding and encoding that whole level allocates 4 bytes/pixel *twice*
-/// (once compositing the tiles, once again inside the format encoder)
-/// before a single output byte exists, easily gigabytes of RAM and a
+/// decoding and encoding that whole level allocates 4 bytes/pixel several
+/// times over (compositing the tiles, the copy handed to the background
+/// encoder, then the encoder's own working buffers) before a single output
+/// byte exists, easily gigabytes of RAM and a
 /// multi-minute encode. There's no size limit by default; pass [maxPixels]
 /// (e.g. [defaultExportMaxPixels]) to throw [ArgumentError] up front instead
 /// of attempting an export over a size you've budgeted for. Prefer

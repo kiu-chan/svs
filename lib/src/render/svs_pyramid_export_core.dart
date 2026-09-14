@@ -1,9 +1,10 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:image/image.dart' as img;
 import 'package:openjpeg_ffi/openjpeg_ffi.dart';
 
+import '../codec/jpeg_encoder.dart';
+import '../codec/rgba_image.dart';
 import '../errors.dart';
 import '../io/byte_sink.dart';
 import '../svs/aperio_tags.dart';
@@ -12,6 +13,7 @@ import '../tiff/tiff_types.dart';
 import '../tiff/tiff_writer.dart';
 import 'image_adjustments.dart';
 import 'region_decoder.dart';
+import 'tile_encoder_pool.dart';
 
 /// Tile compression for `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsToFile`
 /// to (re-)encode the crop's pyramid with — the same two schemes
@@ -33,8 +35,9 @@ enum SvsExportCompression {
 
 /// How aggressively the streaming functions in this file yield control back
 /// to the event loop while building a pyramid — a knob for the tradeoff
-/// between UI smoothness (this all runs on the main isolate — tile decoding
-/// needs `dart:ui`) and raw throughput. Doesn't change peak RAM, which is
+/// between UI smoothness (tile decoding runs on the main isolate, since it
+/// needs `dart:ui`; on native platforms tile encoding runs on background
+/// isolates) and raw throughput. Doesn't change peak RAM, which is
 /// already bounded by design (a couple of tile-row bands per level in
 /// flight at once, never the whole image) regardless of this setting — for
 /// genuine RAM control, prefer a disk-streamed `...ToFile`/`...InPlace`
@@ -217,7 +220,7 @@ Future<void> streamSvsRegionAsSvs(
     width: thumbWidth,
     height: thumbHeight,
     compression: ApCompression.newJpeg,
-    photometricInterpretation: 6, // YCbCr — img.encodeJpg's normal output
+    photometricInterpretation: 6, // YCbCr — JpegEncoder's output
     samplesPerPixel: 3,
     bitsPerSample: const [8, 8, 8],
     predictor: 1,
@@ -232,17 +235,22 @@ Future<void> streamSvsRegionAsSvs(
     associatedImages: [thumbSpec, ...extraSpecs],
   );
 
+  TileEncoderPool? tileEncoder;
   try {
     await sink.writeFrom(layout.headerBytes);
 
+    tileEncoder = await TileEncoderPool.start((
+      jpeg2000: compression == SvsExportCompression.jpeg2000,
+      quality: quality,
+      jp2kCompressionRatio: jp2kCompressionRatio,
+    ));
     final tileSink = _TileSink(sink, specs.length);
     final builders = [
       for (var i = 0; i < specs.length; i++)
         _LevelBuilder(
           levelIndex: i,
           spec: specs[i],
-          quality: quality,
-          jp2kCompressionRatio: jp2kCompressionRatio,
+          tileEncoder: tileEncoder,
           sink: tileSink,
         ),
     ];
@@ -293,6 +301,7 @@ Future<void> streamSvsRegionAsSvs(
       labelAndMacroImages: labelAndMacroImages,
     );
   } finally {
+    await tileEncoder?.close();
     await sink.close();
   }
 }
@@ -483,7 +492,7 @@ Future<void> streamSvsRegionAsSvsPreservingLevels(
     width: thumbWidth,
     height: thumbHeight,
     compression: ApCompression.newJpeg,
-    photometricInterpretation: 6, // YCbCr — img.encodeJpg's normal output
+    photometricInterpretation: 6, // YCbCr — JpegEncoder's output
     samplesPerPixel: 3,
     bitsPerSample: const [8, 8, 8],
     predictor: 1,
@@ -498,9 +507,15 @@ Future<void> streamSvsRegionAsSvsPreservingLevels(
     associatedImages: [thumbSpec, ...extraSpecs],
   );
 
+  TileEncoderPool? tileEncoder;
   try {
     await sink.writeFrom(layout.headerBytes);
 
+    tileEncoder = await TileEncoderPool.start((
+      jpeg2000: compression == SvsExportCompression.jpeg2000,
+      quality: quality,
+      jp2kCompressionRatio: jp2kCompressionRatio,
+    ));
     final tileSink = _TileSink(sink, specs.length);
     final totalRows = regions.fold<int>(0, (sum, r) => sum + r.height);
     var rowsProcessedGlobal = 0;
@@ -519,8 +534,7 @@ Future<void> streamSvsRegionAsSvsPreservingLevels(
       final builder = _LevelBuilder(
         levelIndex: k,
         spec: specs[k],
-        quality: quality,
-        jp2kCompressionRatio: jp2kCompressionRatio,
+        tileEncoder: tileEncoder,
         sink: tileSink,
       );
 
@@ -555,21 +569,14 @@ Future<void> streamSvsRegionAsSvsPreservingLevels(
       await builder.finish();
     }
 
-    var thumbnailImage = img.Image.fromBytes(
-      width: coarsestRegion.width,
-      height: coarsestRegion.height,
-      bytes: coarsestRawBuilder!.takeBytes().buffer,
-      numChannels: 4,
-      order: img.ChannelOrder.rgba,
+    var thumbnailImage = RgbaImage(
+      coarsestRegion.width,
+      coarsestRegion.height,
+      coarsestRawBuilder!.takeBytes(),
     );
     if (thumbnailImage.width != thumbWidth ||
         thumbnailImage.height != thumbHeight) {
-      thumbnailImage = img.copyResize(
-        thumbnailImage,
-        width: thumbWidth,
-        height: thumbHeight,
-        interpolation: img.Interpolation.average,
-      );
+      thumbnailImage = thumbnailImage.resizeAverage(thumbWidth, thumbHeight);
     }
 
     await _writeSvsTail(
@@ -582,6 +589,7 @@ Future<void> streamSvsRegionAsSvsPreservingLevels(
       labelAndMacroImages: labelAndMacroImages,
     );
   } finally {
+    await tileEncoder?.close();
     await sink.close();
   }
 }
@@ -658,13 +666,13 @@ Future<void> _writeSvsTail({
   required PyramidHeaderLayout layout,
   required _TileSink tileSink,
   required int levelCount,
-  required img.Image thumbnailImage,
+  required RgbaImage thumbnailImage,
   required int quality,
   required List<SvsAssociatedImage> labelAndMacroImages,
 }) async {
   var writePos = await sink.position();
 
-  final thumbBytes = img.encodeJpg(thumbnailImage, quality: quality);
+  final thumbBytes = JpegEncoder(quality: quality).encode(thumbnailImage);
   final thumbOffset = writePos;
   await sink.setPosition(writePos);
   await sink.writeFrom(thumbBytes);
@@ -830,7 +838,8 @@ class _TileSink {
 }
 
 /// Builds one pyramid level by accumulating raw RGBA rows pushed in via
-/// [addRows], flushing a JPEG-encoded, sink-written tile-row band as soon as
+/// [addRows], flushing an encoded (by [tileEncoder]), sink-written tile-row
+/// band as soon as
 /// [PyramidLevelSpec.tileLength] rows have accumulated (or, in [finish], the
 /// final shorter band once the source is exhausted). Each flushed band is
 /// also box-filter-downsampled 2x and pushed into [next] — the next-coarser
@@ -840,8 +849,7 @@ class _TileSink {
 class _LevelBuilder {
   final int levelIndex;
   final PyramidLevelSpec spec;
-  final int quality;
-  final double jp2kCompressionRatio;
+  final TileEncoderPool tileEncoder;
   final _TileSink sink;
   _LevelBuilder? next;
 
@@ -855,29 +863,28 @@ class _LevelBuilder {
   /// peak memory never holds more than one band of this level at a time
   /// (matching every other level's own memory bound), rather than the
   /// now-not-necessarily-tiny whole level.
-  img.Image? _thumbnailTarget;
+  RgbaImage? _thumbnailTarget;
   int _thumbRowsEmitted = 0;
 
   /// Allocates this (coarsest) level's thumbnail target at
   /// [width]x[height] — called once, right after construction, only for
   /// `builders.last` in [streamSvsRegionAsSvs].
   void configureThumbnail({required int width, required int height}) {
-    _thumbnailTarget = img.Image(width: width, height: height, numChannels: 4);
+    _thumbnailTarget = RgbaImage.blank(width, height);
   }
 
   /// The finished thumbnail, once every one of this (coarsest) level's bands
   /// has been streamed through [_emitBand] — `null` for any builder without
   /// a [configureThumbnail] call (every level but the coarsest), or before
   /// [finish] has run.
-  img.Image? get finalImage => _thumbnailTarget;
+  RgbaImage? get finalImage => _thumbnailTarget;
 
   final List<Uint8List> _pendingRows = [];
 
   _LevelBuilder({
     required this.levelIndex,
     required this.spec,
-    required this.quality,
-    required this.jp2kCompressionRatio,
+    required this.tileEncoder,
     required this.sink,
   });
 
@@ -915,15 +922,38 @@ class _LevelBuilder {
       );
     }
 
-    final bandImage = img.Image.fromBytes(
+    // Hand the tiles off first: on native platforms they encode on background
+    // isolates while this isolate does the rest of the band's work below.
+    final tilesFuture = tileEncoder.encodeBand(
+      bandBytes,
       width: spec.width,
       height: bandHeight,
-      bytes: bandBytes.buffer,
-      numChannels: 4,
-      order: img.ChannelOrder.rgba,
+      tileWidth: spec.tileWidth,
+      tileLength: spec.tileLength,
     );
+    final List<Uint8List>? downsampled;
+    try {
+      _streamIntoThumbnail(bandBytes, bandHeight);
+      downsampled = next == null
+          ? null
+          : _boxDownsample2x(bandBytes, spec.width, bandHeight);
+    } catch (_) {
+      tilesFuture.ignore();
+      rethrow;
+    }
+
+    for (final tile in await tilesFuture) {
+      await sink.writeTile(levelIndex, tile);
+    }
+    if (downsampled != null) await next!.addRows(downsampled);
+  }
+
+  /// On the coarsest level, downsizes a band to its proportional slice of
+  /// the thumbnail and composites it in; otherwise does nothing.
+  void _streamIntoThumbnail(Uint8List bandBytes, int bandHeight) {
     final thumbnailTarget = _thumbnailTarget;
     if (thumbnailTarget != null) {
+      final bandImage = RgbaImage(spec.width, bandHeight, bandBytes);
       // Maps this band's row range within the coarsest level's full extent
       // ([spec.height]) onto its proportional row range within the
       // thumbnail's own (usually much shorter) extent, so bands tile the
@@ -941,65 +971,12 @@ class _LevelBuilder {
       _thumbRowsEmitted += bandHeight;
       final outHeight = outEnd - outStart;
       if (outHeight > 0 && outStart < thumbnailTarget.height) {
-        final resizedBand = img.copyResize(
-          bandImage,
-          width: thumbnailTarget.width,
-          height: outHeight,
-          interpolation: img.Interpolation.average,
-        );
-        img.compositeImage(
-          thumbnailTarget,
-          resizedBand,
+        thumbnailTarget.blit(
+          bandImage.resizeAverage(thumbnailTarget.width, outHeight),
           dstX: 0,
           dstY: outStart,
-          blend: img.BlendMode.direct,
         );
       }
-    }
-    for (var tx = 0; tx < spec.tilesAcrossX; tx++) {
-      final tileLeft = tx * spec.tileWidth;
-      final tileW = math.min(spec.tileWidth, spec.width - tileLeft);
-      final tile = img.copyCrop(
-        bandImage,
-        x: tileLeft,
-        y: 0,
-        width: tileW,
-        height: bandHeight,
-      );
-      final Uint8List tileBytes;
-      if (spec.compression == ApCompression.jp2k) {
-        // Unlike this builder's JPEG tiles — whose readers (`region_decoder
-        // .dart`, `lod_controller.dart`) already handle a boundary tile
-        // decoding smaller than nominal — every JP2K reader in this package
-        // assumes a tile decodes at exactly the nominal tile-grid size
-        // (true of real Aperio JP2K files, which always pad). So a boundary
-        // tile here is padded up to that same full nominal size before
-        // encoding, rather than encoded at its true (smaller) size like the
-        // JPEG path above.
-        final padded = tileW == spec.tileWidth && bandHeight == spec.tileLength
-            ? tile
-            : img.copyExpandCanvas(
-                tile,
-                newWidth: spec.tileWidth,
-                newHeight: spec.tileLength,
-                position: img.ExpandCanvasPosition.topLeft,
-                backgroundColor: img.ColorRgb8(0, 0, 0),
-              );
-        tileBytes = encodeJ2k(
-          padded.getBytes(order: img.ChannelOrder.rgb),
-          width: spec.tileWidth,
-          height: spec.tileLength,
-          numComponents: 3,
-          compressionRatio: jp2kCompressionRatio,
-        );
-      } else {
-        tileBytes = img.encodeJpg(tile, quality: quality);
-      }
-      await sink.writeTile(levelIndex, tileBytes);
-    }
-
-    if (next != null) {
-      await next!.addRows(_boxDownsample2x(bandBytes, spec.width, bandHeight));
     }
   }
 }

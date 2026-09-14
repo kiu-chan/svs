@@ -507,9 +507,11 @@ This function, like `rebuildSvsPyramidToFile`, is native platforms only
 Every function in this section (and `exportSvsRegionAsSvs`/
 `exportSvsRegionAsSvsPreservingLevels`) takes an `effort`
 (`SvsPyramidRebuildEffort`) parameter that trades throughput for how much
-room the operation leaves the UI thread — relevant because this all runs on
-the main isolate (tile decoding needs `dart:ui`), so a long rebuild can
-otherwise compete with rendering frames:
+room the operation leaves the UI thread — relevant because tile decoding
+runs on the main isolate (it needs `dart:ui`), so a long rebuild can
+otherwise compete with rendering frames. (On native platforms tile encoding
+already runs on a pool of background isolates; on the web it runs on the
+main thread too.)
 
 ```dart
 await rebuildSvsPyramidInPlace(

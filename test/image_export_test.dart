@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -130,6 +131,61 @@ void main() {
         encodeSvsImage(image, format: SvsImageFormat.jpeg, quality: 101),
         throwsA(isA<ArgumentError>()),
       );
+    });
+
+    test('surfaces an encoder error from the background isolate', () async {
+      // Too wide for WebP, which the encoder itself rejects.
+      final completer = Completer<ui.Image>();
+      ui.decodeImageFromPixels(
+        Uint8List(16384 * 4),
+        16384,
+        1,
+        ui.PixelFormat.rgba8888,
+        completer.complete,
+      );
+      final image = await completer.future;
+      addTearDown(image.dispose);
+      await expectLater(
+        encodeSvsImage(image, format: SvsImageFormat.webp),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('keeps the calling isolate responsive while encoding', () async {
+      // Noise makes the PNG encode slow; were it running on this isolate, the
+      // event loop would stall for nearly the whole call.
+      const w = 2048, h = 2048;
+      final random = math.Random(1);
+      final pixels = Uint8List(w * h * 4);
+      for (var i = 0; i < pixels.length; i++) {
+        pixels[i] = random.nextInt(256);
+      }
+      final completer = Completer<ui.Image>();
+      ui.decodeImageFromPixels(
+        pixels,
+        w,
+        h,
+        ui.PixelFormat.rgba8888,
+        completer.complete,
+      );
+      final image = await completer.future;
+      addTearDown(image.dispose);
+
+      final clock = Stopwatch()..start();
+      var lastTick = 0;
+      var longestGap = 0;
+      final timer = Timer.periodic(const Duration(milliseconds: 5), (_) {
+        final now = clock.elapsedMilliseconds;
+        longestGap = math.max(longestGap, now - lastTick);
+        lastTick = now;
+      });
+      await encodeSvsImage(image, format: SvsImageFormat.png);
+      final elapsed = clock.elapsedMilliseconds;
+      // One more tick, so a stall at the very end would be counted too.
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      timer.cancel();
+
+      expect(longestGap, lessThan(elapsed / 2));
     });
   });
 

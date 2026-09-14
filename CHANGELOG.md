@@ -1,3 +1,35 @@
+## 1.3.1
+
+* **No more `image` or `archive` dependencies.** The encoders behind
+  `encodeSvsImage`/`exportSvs*` (PNG, JPEG, BMP, TIFF, lossless WebP), the
+  JPEG tiles and thumbnail written by the pyramid exports and rebuilds, and
+  the TIFF Deflate strip decoder are now implemented inside this package —
+  `openjpeg_ffi` is the only dependency left outside the Flutter SDK.
+  Deflate strips decode through `dart:io`'s zlib on native platforms and a
+  built-in pure-Dart inflater on the web. Output sizes are on par with the
+  previous encoders, and JPEG/WebP encoding is faster.
+* `encodeSvsImage` — and so `exportSvsRegion`/`exportSvsLevel`/
+  `exportAssociatedImage` — now encodes on a background isolate on native
+  platforms, so a large export no longer freezes the UI for the length of
+  the encode (e.g. ~0.6 s for a 4096x4096 PNG). The raw pixels are copied to
+  that isolate once, so peak memory briefly grows by one raw buffer (4 bytes
+  per pixel). The web, which has no isolates, is unchanged.
+* The pyramid exports and rebuilds (`exportSvsRegionAsSvs*`,
+  `rebuildSvsPyramid*`) now encode their tiles — JPEG or JPEG2000 — on a
+  small pool of background isolates on native platforms, splitting each
+  row-band's tiles across them. Tile decoding still runs on the main isolate
+  (it needs `dart:ui`), but the UI no longer stalls for the length of each
+  band's encode, and exports finish faster on multi-core devices — on the
+  CMU-1 sample slide a 4096x4096 crop went from ~850 ms to ~430 ms, with the
+  longest main-isolate stall down from ~100 ms to ~10 ms. Output is
+  unchanged, and memory still stays bounded to about one band at a time. The
+  web, which has no isolates, is unchanged.
+* `SvsImageFormat.bmp` now writes a 24-bit BMP, matching its documented "no
+  alpha channel" (it previously wrote a 32-bit BMP with alpha).
+* Exports a format can't represent — WebP over 16383 px per side, JPEG over
+  65535 — now throw `ArgumentError` up front instead of producing a corrupt
+  file.
+
 ## 1.3.0
 
 * **Rebuild a slide's own pyramid level count.** `rebuildSvsPyramid`/

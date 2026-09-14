@@ -328,7 +328,7 @@ PyramidHeaderLayout planPyramidHeader(
         262,
         TiffType.short,
         1,
-        // YCbCr for new-style JPEG (matches `img.encodeJpg`'s own output);
+        // YCbCr for new-style JPEG (matches `JpegEncoder`'s own output);
         // RGB for JP2K (`encodeJ2k`'s raw-sample input/output has no
         // separate color-transform tag to declare — see `PyramidLevelSpec`'s
         // own doc comment on why this only ever sees these two values).
