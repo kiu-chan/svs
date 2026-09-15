@@ -5,9 +5,18 @@ A Flutter library for displaying Aperio SVS (whole-slide image) files.
 SVS is a pyramidal, tiled TIFF-based format used to store gigapixel
 whole-slide microscopy/pathology images. `svs` reads the pyramid directly
 and streams only the tiles the current viewport needs — the full image is
-never loaded into memory, however large the slide.
+never loaded into memory, however large the slide. Both classic TIFF and
+BigTIFF files are supported, so slides larger than 4 GB open like any
+other.
 
 ## Features
+
+* **Very large images and BigTIFF**: reads classic TIFF and BigTIFF (64-bit
+  offsets, used by scanners for slides over 4 GB) alike, and displays
+  multi-gigapixel slides without loading the whole image — only the tiles
+  in view are read and decoded, with memory and CPU use kept bounded (see
+  *Bounded resource use* below). Slides this package exports or rebuilds
+  are always written as BigTIFF.
 
 * **Pan & zoom viewer** (`SvsImageView`) with a minimap, zoom percentage,
   and a physical scale bar (µm/mm, derived from the slide's own
