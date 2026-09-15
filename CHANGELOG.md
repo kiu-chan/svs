@@ -48,6 +48,12 @@
   encoded bytes until garbage collection, which the Dart GC doesn't see.
 * Closing an `SvsFile` while one of its tile reads is still pending now
   waits for that read, instead of throwing.
+* The API reference on pub.dev now documents `DiskTileCache` and the
+  `*ToFile` export/rebuild helpers, which it previously showed undocumented
+  or left out entirely: their conditional exports now default to the
+  `dart:io` implementation and use the web stub only where
+  `dart:js_interop` exists. Which implementation each platform gets is
+  unchanged.
 
 ## 1.4.0
 

@@ -15,6 +15,8 @@ import 'tile_cache.dart' show TileCacheKey;
 class DiskTileCache {
   DiskTileCache._();
 
+  /// Always throws [UnsupportedError] on this platform — there's no
+  /// filesystem to open a cache directory in.
   static Future<DiskTileCache> open(
     Object directory, {
     int maxBytes = 500 * 1024 * 1024,
@@ -26,21 +28,33 @@ class DiskTileCache {
     );
   }
 
+  /// The decoded-pixel byte budget. Unreachable on this platform (see the
+  /// class doc comment).
   int get maxBytes =>
       throw StateError('unreachable: DiskTileCache.open always throws');
 
+  /// Total decoded-pixel bytes on disk. Unreachable on this platform (see
+  /// the class doc comment).
   int get currentBytes =>
       throw StateError('unreachable: DiskTileCache.open always throws');
 
+  /// Number of tiles cached on disk. Unreachable on this platform (see the
+  /// class doc comment).
   int get length =>
       throw StateError('unreachable: DiskTileCache.open always throws');
 
+  /// Whether [key]'s tile is cached on disk. Unreachable on this platform
+  /// (see the class doc comment).
   bool contains(TileCacheKey key) =>
       throw StateError('unreachable: DiskTileCache.open always throws');
 
+  /// Reads and decodes [key]'s cached tile. Unreachable on this platform
+  /// (see the class doc comment).
   Future<ui.Image?> get(TileCacheKey key) =>
       throw StateError('unreachable: DiskTileCache.open always throws');
 
+  /// Writes a decoded tile to disk. Unreachable on this platform (see the
+  /// class doc comment).
   Future<void> put(
     TileCacheKey key,
     Uint8List rgbaBytes,
@@ -48,6 +62,8 @@ class DiskTileCache {
     int height,
   ) => throw StateError('unreachable: DiskTileCache.open always throws');
 
+  /// Deletes every cached tile. Unreachable on this platform (see the class
+  /// doc comment).
   Future<void> clear() =>
       throw StateError('unreachable: DiskTileCache.open always throws');
 }

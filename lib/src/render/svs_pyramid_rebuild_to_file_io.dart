@@ -12,7 +12,7 @@ import 'svs_pyramid_export_to_file_io.dart';
 /// Writes a brand new file at [path]; [svsFile] and its own underlying
 /// source file (if any) are left open and untouched — this is the "create a
 /// new file next to the original" option (just pass a path next to
-/// [svsFile.path]). Use [rebuildSvsPyramidInPlace] instead to overwrite the
+/// [svsFile]'s own [SvsFile.path]). Use [rebuildSvsPyramidInPlace] instead to overwrite the
 /// source file itself.
 Future<File> rebuildSvsPyramidToFile(
   SvsFile svsFile, {
@@ -71,17 +71,19 @@ Future<File> rebuildSvsPyramidToFile(
 ///
 /// Only once the rebuild fully succeeds does this: close [svsFile] (a real
 /// file handle can't be replaced out from under itself on every platform),
-/// then rename the temp file over [path] — `dart:io`'s [File.rename]
+/// then rename the temp file over its [SvsFile.path] — `dart:io`'s
+/// [File.rename]
 /// already replaces an existing destination file for us, so this is a
 /// single atomic-per-platform swap, not a separate delete-then-rename with
 /// its own failure window. **Note:** [svsFile] is closed as part of this
 /// step regardless of whether the rename that follows succeeds — don't use
 /// it afterwards either way; on success, use the [SvsFile] this function
-/// returns instead, and on failure, reopen [path] yourself if you need a
+/// returns instead, and on failure, reopen that path yourself if you need a
 /// handle on it again (the original file's contents are unaffected by a
 /// failed rename).
 ///
-/// Returns a freshly-[SvsFile.open]ed handle on the rebuilt file at [path].
+/// Returns a freshly-[SvsFile.open]ed handle on the rebuilt file, at the
+/// same path [svsFile] was opened from.
 Future<SvsFile> rebuildSvsPyramidInPlace(
   SvsFile svsFile, {
   int? levelCount,
