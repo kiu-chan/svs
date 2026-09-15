@@ -79,6 +79,109 @@ void main() {
     expect(cache.length, 0);
   });
 
+  test('put() records the reduction and a re-put replaces it', () async {
+    final cache = TileCache(maxBytes: 1000);
+    const key = TileCacheKey(level: 0, tileX: 0, tileY: 0);
+    expect(cache.reductionOf(key), isNull);
+
+    cache.put(key, await _makeImage(1), 4, reduction: 2);
+    expect(cache.reductionOf(key), 2);
+
+    cache.put(key, await _makeImage(2), 16);
+    expect(cache.reductionOf(key), 0);
+    expect(cache.currentBytes, 16);
+    expect(cache.length, 1);
+  });
+
+  // Both lookup strategies: probing the range's grid (range no bigger than
+  // the cache) and scanning the cache's entries (range much bigger).
+  for (final (description, maxTx) in [
+    ('a small range (grid probe)', 1),
+    ('a huge range (entry scan)', 100000),
+  ]) {
+    test('countInRange/forEachInRange over $description', () async {
+      final cache = TileCache(maxBytes: 1000);
+      final inRange = [
+        const TileCacheKey(level: 1, tileX: 0, tileY: 0),
+        const TileCacheKey(level: 1, tileX: 1, tileY: 1),
+      ];
+      final outOfRange = [
+        const TileCacheKey(level: 1, tileX: 0, tileY: 5), // wrong row
+        const TileCacheKey(level: 0, tileX: 0, tileY: 0), // wrong level
+      ];
+      // Out-of-range entries first, so the grid-probe case genuinely has
+      // fewer range cells than cache entries.
+      for (final key in [...outOfRange, ...inRange]) {
+        cache.put(key, await _makeImage(1), 4, reduction: key.tileX);
+      }
+
+      expect(cache.countInRange(1, 0, maxTx, 0, 1), 2);
+
+      final visited = <TileCacheKey, int>{};
+      cache.forEachInRange(
+        1,
+        0,
+        maxTx,
+        0,
+        1,
+        (key, image, reduction) => visited[key] = reduction,
+      );
+      expect(visited, {inRange[0]: 0, inRange[1]: 1});
+    });
+  }
+
+  test('forEachInRange touches visited tiles as most-recently-used', () async {
+    final cache = TileCache(maxBytes: 8);
+    const keyA = TileCacheKey(level: 0, tileX: 0, tileY: 0);
+    const keyB = TileCacheKey(level: 0, tileX: 1, tileY: 0);
+    cache.put(keyA, await _makeImage(1), 4);
+    cache.put(keyB, await _makeImage(1), 4);
+
+    cache.forEachInRange(0, 0, 0, 0, 0, (_, _, _) {}); // touch A only
+
+    const keyC = TileCacheKey(level: 0, tileX: 2, tileY: 0);
+    cache.put(keyC, await _makeImage(1), 4); // evicts B, the LRU one
+    expect(cache.contains(keyA), isTrue);
+    expect(cache.contains(keyB), isFalse);
+  });
+
+  test('span tells a composite apart from the tile at its origin', () async {
+    final cache = TileCache(maxBytes: 1000);
+    const tile = TileCacheKey(level: 0, tileX: 0, tileY: 0);
+    const composite = TileCacheKey(level: 0, tileX: 0, tileY: 0, span: 2);
+    expect(tile, isNot(composite));
+
+    cache.put(tile, await _makeImage(1), 4);
+    cache.put(composite, await _makeImage(1), 4, reduction: 3);
+
+    expect(cache.length, 2);
+    expect(cache.countInRange(0, 0, 0, 0, 0), 1);
+    expect(cache.countInRange(0, 0, 0, 0, 0, span: 2), 1);
+    expect(cache.reductionOf(composite), 3);
+    expect(cache.cachedGroups.toSet(), {(0, 0), (0, 2)});
+  });
+
+  test('cachedGroups drops a group once its last tile is gone', () async {
+    final cache = TileCache(maxBytes: 4);
+    cache.put(
+      const TileCacheKey(level: 1, tileX: 0, tileY: 0),
+      await _makeImage(1),
+      4,
+    );
+    expect(cache.cachedGroups, [(1, 0)]);
+
+    // Evicts level 1's only tile.
+    cache.put(
+      const TileCacheKey(level: 0, tileX: 0, tileY: 0),
+      await _makeImage(1),
+      4,
+    );
+    expect(cache.cachedGroups, [(0, 0)]);
+
+    cache.clear();
+    expect(cache.cachedGroups, isEmpty);
+  });
+
   test('TileCacheKey equality is by value', () {
     const a = TileCacheKey(level: 1, tileX: 2, tileY: 3);
     const b = TileCacheKey(level: 1, tileX: 2, tileY: 3);

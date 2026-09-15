@@ -1,3 +1,54 @@
+## 1.5.0
+
+* **`SvsImageView` stays responsive, and its memory bounded, on very large
+  slides.** Previously a zoomed-out view could request every tile its level
+  spanned at once — thousands, for a slide whose pyramid is shallow for its
+  size — flooding the decoder, thrashing the tile cache, and freezing the
+  whole machine. Now:
+  * Tiles denser than the screen can show are decoded at 1/2, 1/4 or 1/8
+    resolution (a scaled JPEG decode, or a reduced JPEG2000 decode that also
+    skips most of the wavelet work), then re-decoded sharper as you zoom in.
+  * Tiles that would be drawn smaller than 64 px are merged into composite
+    tiles, each built from its reduced member tiles one row at a time. A
+    slide with too few pyramid levels for the current zoom, down to a single
+    level, now needs a few hundred tiles on screen instead of tens of
+    thousands. A normal 4x-stepped Aperio pyramid never needs composites.
+  * A viewport wants at most as many tiles as 80% of the `TileCache` byte
+    budget holds, nearest its center first; the prefetch margin is the
+    first thing dropped.
+  * At most two tile requests per worker isolate are in flight at once. The
+    rest wait in a queue that's replaced, not appended to, on each viewport
+    change, so a fast pan no longer leaves a backlog of stale decodes.
+    Tiles the viewport stopped wanting are only cached if that evicts
+    nothing, and sparse tiles are no longer re-requested on every change.
+  * The worker pool uses half the machine's cores (2-4, previously always
+    2), and a worker now actually drops a request cancelled while still
+    queued — before, a cancel was only seen after that request had run.
+  * Painting walks only the cached tiles in view instead of every grid cell
+    of every fallback level, and skips the fallback layers once the
+    current level is fully loaded.
+  * The slide's thumbnail is painted under tiles still loading, instead of
+    bare background.
+  * An OS memory-pressure signal also halves the tile budget and turns off
+    prefetching for 30 seconds, so refetching doesn't immediately climb back.
+  * Disk-cache writes (a GPU readback each) run one at a time, at most 8
+    queued.
+
+  Measured with a zoom-and-pan sweep in a 2560x1440 viewport: on a real
+  81671x42699 slide, the longest main-isolate stall went from 35 ms to about
+  20 ms, tile decodes from 5733 to 3085, and process memory growth from
+  313 MB to 181 MB. On a 24000x16000 single-level slide, memory growth went
+  from ~1.2 GB to ~150 MB, the longest stall from 124 ms to 11 ms, and tile
+  decodes from 17964 to 3282.
+* `SvsLevel.readTileRgba`/`SvsFile.readTileRgba` gain a
+  `reducedResolutionFactor` parameter, decoding a JPEG2000 tile at
+  `1 / 2^factor` of its size.
+* Image codecs used to decode JPEG tiles, strips, and region crops are now
+  disposed right after decoding. They previously held a native copy of the
+  encoded bytes until garbage collection, which the Dart GC doesn't see.
+* Closing an `SvsFile` while one of its tile reads is still pending now
+  waits for that read, instead of throwing.
+
 ## 1.4.0
 
 * **No more `image` or `archive` dependencies.** The encoders behind

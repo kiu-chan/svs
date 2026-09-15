@@ -45,7 +45,12 @@ Future<ui.Image> _decodeJpegStrips(SvsAssociatedImage image) async {
     if (bytes.isEmpty) continue;
     try {
       final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
+      final ui.FrameInfo frame;
+      try {
+        frame = await codec.getNextFrame();
+      } finally {
+        codec.dispose();
+      }
       final stripRgba = await frame.image.toByteData(
         format: ui.ImageByteFormat.rawRgba,
       );

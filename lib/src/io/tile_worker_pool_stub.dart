@@ -11,7 +11,12 @@ import 'tile_worker_types.dart';
 class TileWorkerPool {
   TileWorkerPool._();
 
-  static Future<TileWorkerPool> spawn(String path, {int workerCount = 2}) {
+  static int get defaultWorkerCount => 1;
+
+  int get workerCount =>
+      throw StateError('unreachable: TileWorkerPool.spawn always rejects');
+
+  static Future<TileWorkerPool> spawn(String path, {int? workerCount}) {
     return Future.error(
       UnsupportedError(
         'TileWorkerPool (background-isolate tile fetching) is not '
@@ -26,6 +31,7 @@ class TileWorkerPool {
     required int tileX,
     required int tileY,
     TilePriority priority = TilePriority.visible,
+    int reduction = 0,
   }) => throw StateError('unreachable: TileWorkerPool.spawn always rejects');
 
   void cancel(int requestId) {}

@@ -61,6 +61,15 @@ never loaded into memory, however large the slide.
 * **Export to common image formats** (`exportSvsRegion`, `exportAssociatedImage`,
   `exportSvsLevel`): encode a crop, an associated image, or a whole pyramid
   level to PNG, JPEG, BMP, TIFF, or WebP bytes.
+* **Bounded resource use, however large the slide**: a viewport never wants
+  more tiles than the tile cache's byte budget holds (nearest the center
+  first), at most two tile requests per worker isolate are in flight at
+  once, the worker pool uses half the machine's cores (2-4), and tiles
+  denser than the screen can show — common on slides whose pyramid steps
+  are 4x or wider, or that have only one level — are decoded at 1/2, 1/4,
+  or 1/8 resolution instead of full size. Tiles that would be drawn smaller
+  than 64 px are merged into composites, so even a single-level slide stays
+  smooth zoomed all the way out.
 * Memory-pressure aware tile cache, and active cancellation of in-flight
   tile requests once they scroll out of view.
 * **Persistent disk tile cache** (`DiskTileCache`, opt-in, native platforms

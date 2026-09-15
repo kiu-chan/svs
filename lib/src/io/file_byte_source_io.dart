@@ -37,6 +37,9 @@ class _FileByteSource implements RandomAccessByteSource {
     return _raf.read(length);
   }
 
+  /// Waits out any read still queued — closing `_raf` under an in-flight
+  /// `setPosition`/`read` throws, e.g. when a viewer is torn down and its
+  /// slide closed while a last tile read is still pending.
   @override
-  Future<void> close() => _raf.close();
+  Future<void> close() => _readQueue.then((_) => _raf.close());
 }

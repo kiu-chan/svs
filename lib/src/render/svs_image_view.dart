@@ -182,6 +182,16 @@ class _SvsImageViewState extends State<SvsImageView>
 
   ui.Image? _overviewImage;
 
+  /// Whether [_overviewImage] has the slide's own aspect ratio — only then
+  /// is it safe to stretch under the tiles as a placeholder (see
+  /// [_TilePainter.baseImage]); a misclassified label/macro image isn't.
+  bool _overviewMatchesSlide = false;
+
+  /// A thumbnail bigger than this (pixels) isn't decoded for the minimap —
+  /// it'd cost more memory than the whole on-screen tile set, for a
+  /// 160-pixel preview.
+  static const _maxOverviewPixels = 4096 * 4096;
+
   @override
   void initState() {
     super.initState();
@@ -209,6 +219,7 @@ class _SvsImageViewState extends State<SvsImageView>
   /// a speed optimization.
   @override
   void didHaveMemoryPressure() {
+    _lod.handleMemoryPressure();
     _cache.clear();
     if (!mounted) return;
     setState(
@@ -230,14 +241,23 @@ class _SvsImageViewState extends State<SvsImageView>
         break;
       }
     }
-    if (thumbnail == null) return;
+    if (thumbnail == null ||
+        thumbnail.width * thumbnail.height > _maxOverviewPixels) {
+      return;
+    }
     try {
       final image = await decodeAssociatedImage(thumbnail);
       if (!mounted) {
         image.dispose();
         return;
       }
-      setState(() => _overviewImage = image);
+      final level0 = widget.svsFile.levels.first;
+      final slideAspect = level0.width / level0.height;
+      final imageAspect = image.width / image.height;
+      setState(() {
+        _overviewImage = image;
+        _overviewMatchesSlide = (imageAspect / slideAspect - 1).abs() < 0.02;
+      });
     } catch (_) {
       // No minimap if the thumbnail can't be decoded — not critical.
     }
@@ -304,6 +324,7 @@ class _SvsImageViewState extends State<SvsImageView>
             maxUpsample: widget.maxUpsample,
             adjustments: widget.adjustments,
             backgroundColor: widget.backgroundColor,
+            baseImage: _overviewMatchesSlide ? _overviewImage : null,
           ),
         ),
       ),
@@ -594,6 +615,12 @@ class _TilePainter extends CustomPainter {
   final SvsImageAdjustments adjustments;
   final Color backgroundColor;
 
+  /// The slide's decoded thumbnail, if any — stretched over the slide's
+  /// extent underneath everything else while the current level's tiles are
+  /// still loading, so a fresh view shows a blurry preview rather than bare
+  /// background.
+  final ui.Image? baseImage;
+
   _TilePainter({
     required this.svsFile,
     required this.cache,
@@ -602,6 +629,7 @@ class _TilePainter extends CustomPainter {
     required this.maxUpsample,
     required this.adjustments,
     required this.backgroundColor,
+    required this.baseImage,
   });
 
   // Anti-aliased edges on abutting tile rects each blend independently
@@ -640,19 +668,71 @@ class _TilePainter extends CustomPainter {
       maxUpsample: maxUpsample,
     );
     final level = levels[levelIndex];
+    final span = _spanFor(level);
+    final visible = computeVisibleTiles(
+      spanGeometry(level.geometry, span),
+      size,
+      scale,
+      origin,
+    );
 
-    // While `level`'s own tiles are still decoding, paint whatever
-    // already-cached coarser/finer level covers this viewport underneath,
-    // stretched to the current transform — a blurry preview beats a blank
-    // flash during a fast zoom, and gets progressively covered by `level`'s
-    // sharp tiles as they arrive.
-    final fallbackIndex = _findFallbackLevelIndex(levels, levelIndex, size);
-    if (fallbackIndex != null) {
-      _paintLevelTiles(canvas, levels[fallbackIndex], size);
+    // While `level`'s own tiles are still decoding, paint the thumbnail and
+    // whatever already-cached coarser/finer level (or composite size)
+    // covers this viewport underneath, stretched to the current transform —
+    // a blurry preview beats a blank flash during a fast zoom, and gets
+    // progressively covered by `level`'s sharp tiles as they arrive. Skipped
+    // entirely once every visible tile is in: it'd be fully painted over
+    // anyway, and not touching the fallback tiles lets the cache age them
+    // out.
+    final visibleCount =
+        (visible.maxTx - visible.minTx + 1) *
+        (visible.maxTy - visible.minTy + 1);
+    final complete =
+        cache.countInRange(
+          level.index,
+          visible.minTx,
+          visible.maxTx,
+          visible.minTy,
+          visible.maxTy,
+          span: span,
+        ) ==
+        visibleCount;
+    if (!complete) {
+      final base = baseImage;
+      if (base != null) {
+        canvas.drawImageRect(
+          base,
+          Rect.fromLTWH(0, 0, base.width.toDouble(), base.height.toDouble()),
+          _levelExtentScreenRect(levels.first),
+          _imagePaint,
+        );
+      }
+      final fallback = _findFallback(levels, levelIndex, span, size);
+      if (fallback != null) {
+        final (fallbackIndex, fallbackSpan) = fallback;
+        final fallbackLevel = levels[fallbackIndex];
+        _paintLevelTiles(
+          canvas,
+          fallbackLevel,
+          fallbackSpan,
+          computeVisibleTiles(
+            spanGeometry(fallbackLevel.geometry, fallbackSpan),
+            size,
+            scale,
+            origin,
+          ),
+        );
+      }
     }
 
-    _paintLevelTiles(canvas, level, size);
+    _paintLevelTiles(canvas, level, span, visible);
   }
+
+  /// Must match `LodController`'s own choice for the same level and scale,
+  /// or this would look for tiles under keys nothing ever fetched.
+  int _spanFor(SvsLevel level) => selectSpan(
+    math.min(level.tileWidth, level.tileLength) * level.downsample * scale,
+  );
 
   /// [level]'s full extent, converted to screen space — a right/bottom-edge
   /// tile's *decoded* image is sometimes padded up to the nominal tile size
@@ -671,18 +751,26 @@ class _TilePainter extends CustomPainter {
     level.height * level.downsample * scale,
   );
 
-  void _paintLevelTiles(Canvas canvas, SvsLevel level, Size size) {
-    final visible = computeVisibleTiles(level.geometry, size, scale, origin);
+  /// Only [visible]'s cached tiles are visited (missing ones leave the
+  /// background/fallback layer showing through) — at a cost bounded by the
+  /// cache's size, not by the range, which for a finer fallback level seen
+  /// zoomed out can span tens of thousands of tiles.
+  void _paintLevelTiles(
+    Canvas canvas,
+    SvsLevel level,
+    int span,
+    VisibleTiles visible,
+  ) {
     canvas.save();
     canvas.clipRect(_levelExtentScreenRect(level));
-    for (var ty = visible.minTy; ty <= visible.maxTy; ty++) {
-      for (var tx = visible.minTx; tx <= visible.maxTx; tx++) {
-        final image = cache.get(
-          TileCacheKey(level: level.index, tileX: tx, tileY: ty),
-        );
-        if (image == null) {
-          continue; // background fill / fallback layer shows through
-        }
+    cache.forEachInRange(
+      level.index,
+      visible.minTx,
+      visible.maxTx,
+      visible.minTy,
+      visible.maxTy,
+      span: span,
+      (key, image, reduction) {
         final src = Rect.fromLTWH(
           0,
           0,
@@ -692,38 +780,54 @@ class _TilePainter extends CustomPainter {
         canvas.drawImageRect(
           image,
           src,
-          _tileScreenRect(level, tx, ty, image),
+          _tileScreenRect(level, key, image, reduction),
           _imagePaint,
         );
-      }
-    }
+      },
+    );
     canvas.restore();
   }
 
-  /// The already-cached level closest in index to [targetIndex] (excluding
-  /// it) that has at least one visible tile decoded — checked coarser
-  /// (index+1, +2, …) before finer, since "just zoomed in from a
-  /// fully-loaded overview" is the common case this exists for.
-  int? _findFallbackLevelIndex(
+  /// The cached (level, span) group nearest the target (excluding the
+  /// target itself) that has at least one tile decoded in view: nearest
+  /// level first, coarser before finer at the same distance — since "just
+  /// zoomed in from a fully-loaded overview" is the common case this exists
+  /// for — then nearest span. Only groups actually in the cache are probed.
+  (int, int)? _findFallback(
     List<SvsLevel> levels,
     int targetIndex,
+    int targetSpan,
     Size size,
   ) {
-    for (var d = 1; d < levels.length; d++) {
-      for (final candidate in [targetIndex + d, targetIndex - d]) {
-        if (candidate < 0 || candidate >= levels.length) continue;
-        final geometry = levels[candidate].geometry;
-        final visible = computeVisibleTiles(geometry, size, scale, origin);
-        for (var ty = visible.minTy; ty <= visible.maxTy; ty++) {
-          for (var tx = visible.minTx; tx <= visible.maxTx; tx++) {
-            if (cache.contains(
-              TileCacheKey(level: candidate, tileX: tx, tileY: ty),
-            )) {
-              return candidate;
-            }
-          }
-        }
-      }
+    final groups = [
+      for (final group in cache.cachedGroups)
+        if (group != (targetIndex, targetSpan) && group.$1 < levels.length)
+          group,
+    ];
+    groups.sort((a, b) {
+      final byDistance = (a.$1 - targetIndex).abs().compareTo(
+        (b.$1 - targetIndex).abs(),
+      );
+      if (byDistance != 0) return byDistance;
+      if (a.$1 != b.$1) return b.$1.compareTo(a.$1);
+      return (a.$2 - targetSpan).abs().compareTo((b.$2 - targetSpan).abs());
+    });
+    for (final (levelIndex, span) in groups) {
+      final visible = computeVisibleTiles(
+        spanGeometry(levels[levelIndex].geometry, span),
+        size,
+        scale,
+        origin,
+      );
+      final cached = cache.countInRange(
+        levelIndex,
+        visible.minTx,
+        visible.maxTx,
+        visible.minTy,
+        visible.maxTy,
+        span: span,
+      );
+      if (cached > 0) return (levelIndex, span);
     }
     return null;
   }
@@ -736,17 +840,29 @@ class _TilePainter extends CustomPainter {
   // overlap this creates into the next tile is imperceptible.
   static const _seamGuard = 1.0;
 
-  Rect _tileScreenRect(SvsLevel level, int tx, int ty, ui.Image image) {
-    final level0X = tx * level.tileWidth * level.downsample;
-    final level0Y = ty * level.tileLength * level.downsample;
+  Rect _tileScreenRect(
+    SvsLevel level,
+    TileCacheKey key,
+    ui.Image image,
+    int reduction,
+  ) {
+    // A composite (span > 0) starts at its first member tile.
+    final level0X =
+        key.tileX * (level.tileWidth << key.span) * level.downsample;
+    final level0Y =
+        key.tileY * (level.tileLength << key.span) * level.downsample;
     // Sized from the tile's own decoded dimensions, not the nominal tile
     // grid size — those only match when this tile isn't a right/bottom-edge
     // one, or the encoder padded it up to full size. An edge tile decoded
     // *smaller* than nominal (legal per the TIFF new-style-JPEG scheme) must
     // keep its dst rect that same smaller size, or drawImageRect stretches
-    // its real content to fill the extra space non-uniformly.
-    final level0Width = image.width * level.downsample;
-    final level0Height = image.height * level.downsample;
+    // its real content to fill the extra space non-uniformly. A tile decoded
+    // at reduced resolution covers `2^reduction` level texels per pixel
+    // (rounding up can overhang the level's edge by under one pixel, which
+    // the level-extent clip hides).
+    final texelsPerPixel = (1 << reduction) * level.downsample;
+    final level0Width = image.width * texelsPerPixel;
+    final level0Height = image.height * texelsPerPixel;
     final left = (level0X - origin.dx) * scale;
     final top = (level0Y - origin.dy) * scale;
     return Rect.fromLTWH(

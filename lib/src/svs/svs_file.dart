@@ -421,9 +421,19 @@ class SvsLevel {
   /// empty for a sparse tile. Only valid when [isJp2k]; use
   /// [readTileJpegBytes] for [isJpeg] instead.
   ///
+  /// [reducedResolutionFactor] (default 0, full resolution) discards that
+  /// many of the codestream's highest-resolution wavelet levels, decoding a
+  /// `ceil(tileWidth / 2^f)` x `ceil(tileLength / 2^f)` tile — much faster
+  /// and smaller when only a zoomed-out preview is needed. Throws
+  /// [TileIoException] if the tile has fewer wavelet levels than that.
+  ///
   /// Decoding happens via `openjpeg_ffi` (native OpenJPEG) — see
   /// [Jp2kDecodeException] for how decode failures surface.
-  Future<Uint8List> readTileRgba(int tx, int ty) async {
+  Future<Uint8List> readTileRgba(
+    int tx,
+    int ty, {
+    int reducedResolutionFactor = 0,
+  }) async {
     final rawTile = await _readRawTileBytes(tx, ty);
     if (rawTile.isEmpty) return rawTile;
     // No-op/instant on native; on web this lazily instantiates the
@@ -432,7 +442,10 @@ class SvsLevel {
     await initOpenJpegWasm();
     final Jp2kImage decoded;
     try {
-      decoded = decodeJ2k(rawTile);
+      decoded = decodeJ2k(
+        rawTile,
+        reducedResolutionFactor: reducedResolutionFactor,
+      );
     } on Jp2kDecodeException catch (e) {
       throw TileIoException(
         index,
@@ -441,12 +454,55 @@ class SvsLevel {
         'JPEG2000 decode failed: ${e.message}',
       );
     }
+    var pixels = decoded.pixels;
+    var width = decoded.width;
+    var height = decoded.height;
+    final reducedWidth = _reducedExtent(tileWidth, reducedResolutionFactor);
+    final reducedHeight = _reducedExtent(tileLength, reducedResolutionFactor);
+    if (width > reducedWidth || height > reducedHeight) {
+      // openjpeg_ffi 0.3.1 reports a reduced decode at the codestream's full
+      // canvas size: the reduced image sits in the top-left corner, the rest
+      // is its edge pixels stretched out. Crop that corner back out — a
+      // no-op for a decoder that reports the reduced size itself.
+      pixels = _cropTopLeft(
+        pixels,
+        stride: width,
+        samplesPerPixel: decoded.numComponents,
+        width: reducedWidth,
+        height: reducedHeight,
+      );
+      width = reducedWidth;
+      height = reducedHeight;
+    }
     return expandRgbToRgba(
-      decoded.pixels,
-      width: decoded.width,
-      height: decoded.height,
+      pixels,
+      width: width,
+      height: height,
       samplesPerPixel: decoded.numComponents,
     );
+  }
+
+  static int _reducedExtent(int extent, int factor) =>
+      (extent + (1 << factor) - 1) >> factor;
+
+  static Uint8List _cropTopLeft(
+    Uint8List pixels, {
+    required int stride,
+    required int samplesPerPixel,
+    required int width,
+    required int height,
+  }) {
+    final out = Uint8List(width * height * samplesPerPixel);
+    for (var y = 0; y < height; y++) {
+      final src = y * stride * samplesPerPixel;
+      out.setRange(
+        y * width * samplesPerPixel,
+        (y + 1) * width * samplesPerPixel,
+        pixels,
+        src,
+      );
+    }
+    return out;
   }
 
   /// Every TIFF tag on this level's IFD, decoded — the "full info" dump for
@@ -642,13 +698,23 @@ class SvsFile {
     return levels[level].readTileJpegBytes(tx, ty);
   }
 
-  Future<Uint8List> readTileRgba(int level, int tx, int ty) {
+  /// See [SvsLevel.readTileRgba].
+  Future<Uint8List> readTileRgba(
+    int level,
+    int tx,
+    int ty, {
+    int reducedResolutionFactor = 0,
+  }) {
     if (level < 0 || level >= levels.length) {
       throw SvsFormatException(
         'Level $level out of range (have ${levels.length} levels)',
       );
     }
-    return levels[level].readTileRgba(tx, ty);
+    return levels[level].readTileRgba(
+      tx,
+      ty,
+      reducedResolutionFactor: reducedResolutionFactor,
+    );
   }
 
   Future<void> close() => _tiff.close();

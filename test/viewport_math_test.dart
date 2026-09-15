@@ -137,4 +137,138 @@ void main() {
       },
     );
   });
+
+  group('selectReduction', () {
+    final cases = <(double, int)>[
+      (1.3, 0), // at the quality bar already: full resolution
+      (0.66, 0), // halving would make each pixel 1.32 screen px — too big
+      (0.65, 1),
+      (0.3, 2),
+      (0.1, 3),
+      (0.001, 3), // capped at maxReduction
+    ];
+    for (final (screenPixelsPerTexel, expected) in cases) {
+      test('$screenPixelsPerTexel screen px/texel -> shift $expected', () {
+        expect(selectReduction(screenPixelsPerTexel), expected);
+      });
+    }
+
+    test('respects a custom maxReduction', () {
+      expect(selectReduction(0.001, maxReduction: 1), 1);
+    });
+  });
+
+  test('reducedTileExtent rounds up', () {
+    expect(reducedTileExtent(240, 0), 240);
+    expect(reducedTileExtent(240, 3), 30);
+    expect(reducedTileExtent(71, 1), 36);
+    expect(reducedTileExtent(1, 3), 1);
+  });
+
+  group('tilesNearestFirst', () {
+    const range = VisibleTiles(
+      level: 0,
+      minTx: 0,
+      maxTx: 4,
+      minTy: 0,
+      maxTy: 2,
+    );
+
+    int chebyshev((int, int) tile, int cx, int cy) {
+      final dx = (tile.$1 - cx).abs();
+      final dy = (tile.$2 - cy).abs();
+      return dx > dy ? dx : dy;
+    }
+
+    test('lists every tile in the range exactly once, nearest ring first', () {
+      final tiles = tilesNearestFirst(range, 2.5, 1.5, 1000);
+      expect(tiles.toSet(), {
+        for (var ty = 0; ty <= 2; ty++)
+          for (var tx = 0; tx <= 4; tx++) (tx, ty),
+      });
+      expect(tiles, hasLength(15));
+      expect(tiles.first, (2, 1));
+      final rings = tiles.map((t) => chebyshev(t, 2, 1)).toList();
+      expect(rings, orderedEquals([...rings]..sort()));
+    });
+
+    test('stops at the limit, keeping the nearest tiles', () {
+      final tiles = tilesNearestFirst(range, 2.5, 1.5, 9);
+      expect(tiles.toSet(), {
+        for (var ty = 0; ty <= 2; ty++)
+          for (var tx = 1; tx <= 3; tx++) (tx, ty),
+      });
+    });
+
+    test('skips excluded tiles', () {
+      const core = VisibleTiles(
+        level: 0,
+        minTx: 1,
+        maxTx: 3,
+        minTy: 0,
+        maxTy: 2,
+      );
+      final tiles = tilesNearestFirst(range, 2.5, 1.5, 1000, exclude: core);
+      expect(tiles.toSet(), {(0, 0), (0, 1), (0, 2), (4, 0), (4, 1), (4, 2)});
+    });
+
+    test('a center outside the range starts from the nearest edge tile', () {
+      final tiles = tilesNearestFirst(range, -50, 99, 1);
+      expect(tiles, [(0, 2)]);
+    });
+
+    test('cost tracks the limit, not the size of a huge range', () {
+      const huge = VisibleTiles(
+        level: 0,
+        minTx: 0,
+        maxTx: 999999,
+        minTy: 0,
+        maxTy: 999999,
+      );
+      final stopwatch = Stopwatch()..start();
+      final tiles = tilesNearestFirst(huge, 500000, 500000, 1024);
+      expect(tiles, hasLength(1024));
+      expect(stopwatch.elapsedMilliseconds, lessThan(1000));
+    });
+
+    test('a non-positive limit returns nothing', () {
+      expect(tilesNearestFirst(range, 2, 1, 0), isEmpty);
+    });
+  });
+
+  group('selectSpan', () {
+    final cases = <(double, int)>[
+      (78, 0), // a 240 px tile at the coarsest zoom a 4x pyramid allows
+      (64, 0),
+      (63.9, 1),
+      (7.68, 4),
+      (0.001, 6), // capped at maxSpan
+    ];
+    for (final (tileScreenSize, expected) in cases) {
+      test('$tileScreenSize px tiles -> span $expected', () {
+        expect(selectSpan(tileScreenSize), expected);
+      });
+    }
+  });
+
+  test('spanGeometry coarsens only the tile grid', () {
+    const level = SvsLevelGeometry(
+      index: 1,
+      width: 1000,
+      height: 600,
+      tileWidth: 256,
+      tileLength: 256,
+      compression: ApCompression.newJpeg,
+      downsample: 4,
+    );
+    final composites = spanGeometry(level, 2);
+    expect((composites.tileWidth, composites.tileLength), (1024, 1024));
+    expect((composites.tilesAcrossX, composites.tilesAcrossY), (1, 1));
+    expect(
+      (composites.index, composites.width, composites.height),
+      (1, 1000, 600),
+    );
+    expect(composites.downsample, 4);
+    expect(spanGeometry(level, 0), same(level));
+  });
 }

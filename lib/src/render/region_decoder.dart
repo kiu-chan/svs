@@ -152,7 +152,14 @@ Future<_DecodedTile?> _decodeTileRgba(SvsLevel level, int tx, int ty) async {
     final jpegBytes = await level.readTileJpegBytes(tx, ty);
     if (jpegBytes.isEmpty) return null;
     final codec = await ui.instantiateImageCodec(jpegBytes);
-    final frame = await codec.getNextFrame();
+    final ui.FrameInfo frame;
+    try {
+      frame = await codec.getNextFrame();
+    } finally {
+      // Holds its own copy of the encoded bytes natively until disposed (or
+      // eventually finalized) — invisible to the Dart GC's memory pressure.
+      codec.dispose();
+    }
     final data = await frame.image.toByteData(
       format: ui.ImageByteFormat.rawRgba,
     );
