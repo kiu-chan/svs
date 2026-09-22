@@ -25,13 +25,15 @@ other.
 * **Level-of-detail tile streaming**: only the visible region's tiles are
   fetched and decoded, at the resolution level that matches the current
   zoom — panning and zooming a multi-gigapixel slide stays smooth.
-* **Background isolate decoding** (native platforms): tile I/O and JPEG2000
-  decode run off the main isolate, so the UI thread stays responsive. On the
-  web, which has no background isolates, decoding runs on the calling
-  thread instead — see [Platform support](#platform-support).
+* **Background decoding**: on native platforms tile I/O and JPEG2000 decode
+  run on background isolates; on the web, JPEG2000 decode and export
+  encoding run on Web Workers. Either way the UI thread stays responsive —
+  see [Platform support](#platform-support).
 * **JPEG and JPEG2000 tiles**, the two compressions Aperio actually ships
-  (`Compression` 7 and 33005) — JPEG2000 via
-  [`openjpeg_ffi`](https://pub.dev/packages/openjpeg_ffi).
+  (`Compression` 7 and 33005). JPEG2000 goes through this package's own
+  pure-Dart codec: a complete Part 1 decoder, and a lossless or
+  rate-controlled lossy encoder for exports. `svs` depends on nothing
+  beyond Flutter itself.
 * **Associated images and metadata**: thumbnail/label/macro images, and
   parsed Aperio metadata (magnification, microns-per-pixel, and the rest of
   the pipe-delimited `ImageDescription` block).
@@ -91,9 +93,8 @@ other.
 
 `svs` runs on every Flutter platform — iOS, Android, macOS, Windows, Linux,
 and (since 1.2.0) the web — with the same API (`SvsFile`, `SvsImageView`,
-region/pyramid export, annotations). JPEG2000 decoding is native on all of
-them via [`openjpeg_ffi`](https://pub.dev/packages/openjpeg_ffi), which
-compiles OpenJPEG to WebAssembly for the web build.
+region/pyramid export, annotations). JPEG2000 is decoded and encoded in
+pure Dart on all of them, so there's no native library to build or ship.
 
 A few things are unavoidably different on the web, since it has no
 filesystem and no background isolates:
@@ -108,10 +109,13 @@ filesystem and no background isolates:
   `SvsFile.openBytes(bytes)` still works for bytes already in memory.
   `SvsFile.path` is `null` for a file opened either way. See `example/` for
   a working web file picker.
-* **No background-isolate decoding**: tile fetch/JPEG2000 decode runs on the
-  calling thread instead of a worker isolate — this falls back
-  automatically, no code changes needed, but a JP2K-heavy slide may feel
-  less smooth while panning/zooming than on native.
+* **Web Workers instead of isolates**: JPEG2000 tile decoding, and the
+  encoding done by exports, run on a few Web Workers the package starts
+  itself from an embedded script — no extra file to serve. (JPEG tiles are
+  decoded by the browser's own image decoder.) A page whose
+  Content-Security-Policy doesn't allow `blob:` workers (`worker-src blob:`)
+  falls back to doing this work on the main thread, which works but can
+  stutter while a JPEG2000 slide loads.
 * **No `DiskTileCache`**: there's no filesystem to persist tiles to across
   page reloads. The in-memory `TileCache` (always on) still avoids
   re-decoding a tile you're actively panning back and forth over.

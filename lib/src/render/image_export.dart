@@ -2,14 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import '../codec/bmp_encoder.dart';
-import '../codec/jpeg_encoder.dart';
-import '../codec/png_encoder.dart';
-import '../codec/rgba_image.dart';
-import '../codec/tiff_encoder.dart';
-import '../codec/webp_encoder.dart';
+import '../codec/background_codec.dart';
 import '../errors.dart';
-import '../io/background_task.dart';
 import '../svs/svs_file.dart';
 import 'associated_image_decoder.dart';
 import 'image_adjustments.dart';
@@ -57,8 +51,10 @@ enum SvsImageFormat {
 /// On native platforms the adjustment and encoding run on a background
 /// isolate, so even a multi-second encode of a large export doesn't freeze
 /// the UI; the raw pixels are copied to that isolate once, briefly holding a
-/// second `width * height * 4`-byte buffer. On the web, which has no
-/// isolates, they run on the calling thread.
+/// second `width * height * 4`-byte buffer. On the web the encoding runs on
+/// a Web Worker instead (the adjustment, on the calling thread), with the
+/// same one extra copy — or on the calling thread if the page can't run
+/// workers (a Content-Security-Policy without `worker-src blob:`).
 ///
 /// Does not dispose [image] — the caller still owns it.
 Future<Uint8List> encodeSvsImage(
@@ -80,37 +76,15 @@ Future<Uint8List> encodeSvsImage(
     data.offsetInBytes,
     data.lengthInBytes,
   );
-  return _encodeInBackground(
+  return encodeImageInBackground(
     pixels,
     image.width,
     image.height,
-    format,
+    format.index,
     quality,
     adjustments,
   );
 }
-
-/// [encodeSvsImage]'s CPU-heavy half, kept in its own function so the
-/// closure sent to the background isolate captures only these sendable
-/// values — never the `dart:ui` image, which can't cross isolates.
-Future<Uint8List> _encodeInBackground(
-  Uint8List pixels,
-  int width,
-  int height,
-  SvsImageFormat format,
-  int quality,
-  SvsImageAdjustments adjustments,
-) => runInBackground(() {
-  adjustments.applyToRgba(pixels);
-  final rgba = RgbaImage(width, height, pixels);
-  return switch (format) {
-    SvsImageFormat.png => encodePng(rgba),
-    SvsImageFormat.jpeg => JpegEncoder(quality: quality).encode(rgba),
-    SvsImageFormat.bmp => encodeBmp(rgba),
-    SvsImageFormat.tiff => encodeTiff(rgba),
-    SvsImageFormat.webp => encodeWebP(rgba),
-  };
-});
 
 /// Crops [level]'s (`x`,`y`)-`width`x`height` rectangle — see [readSvsRegion]
 /// for coordinate semantics — and encodes it straight to [format]'s bytes: a

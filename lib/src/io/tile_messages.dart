@@ -47,8 +47,8 @@ class CancelTileMessage {
 /// [bytes] is standalone (spliced) JPEG bytes when [isRgba] is false — the
 /// receiver still needs `dart:ui` to decode it (main-isolate-only) — or
 /// already-decoded, tightly-packed RGBA8888 bytes when [isRgba] is true
-/// (the JPEG2000 path, decoded via `openjpeg_ffi` inside the worker, which
-/// has no such isolate restriction). Null [bytes] means a sparse tile
+/// (the JPEG2000 path, decoded by this package's own pure-Dart decoder
+/// inside the worker, which has no such isolate restriction). Null [bytes] means a sparse tile
 /// (blank) or [error] is set.
 ///
 /// [reduction] is the reduced-resolution shift the RGBA bytes were actually

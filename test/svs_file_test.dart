@@ -190,8 +190,8 @@ void main() {
   test('accepts a JPEG2000-compressed pyramid level at open time', () async {
     // Only proves the open-time gate no longer rejects Compression=33005 —
     // actually decoding real J2K codestream bytes is covered by the real
-    // sample file integration test (openjpeg_ffi needs a genuine
-    // codestream, not synthetic placeholder bytes).
+    // sample file integration test (decoding needs a genuine codestream,
+    // not synthetic placeholder bytes).
     final bytes = buildTiff(
       bigTiff: false,
       order: Endian.little,

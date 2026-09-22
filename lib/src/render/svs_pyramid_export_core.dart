@@ -1,8 +1,6 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:openjpeg_ffi/openjpeg_ffi.dart';
-
 import '../codec/jpeg_encoder.dart';
 import '../codec/rgba_image.dart';
 import '../errors.dart';
@@ -24,9 +22,9 @@ enum SvsExportCompression {
   /// supported, matches what most real Aperio slides already use.
   jpeg,
 
-  /// JPEG2000 (TIFF `Compression` 33005), via `openjpeg_ffi`'s `encodeJ2k` —
+  /// JPEG2000 (TIFF `Compression` 33005), via this package's own encoder —
   /// mathematically lossless by default, or lossy at a chosen ratio via
-  /// that function's `jp2kCompressionRatio` parameter; typically a
+  /// the export's `jp2kCompressionRatio` parameter; typically a
   /// meaningfully smaller file than JPEG at comparable visual quality,
   /// at the cost of slower encoding. Matches what real Aperio JP2K slides
   /// use.
@@ -125,11 +123,6 @@ Future<void> streamSvsRegionAsSvs(
       'really mean it.',
     );
   }
-
-  // JPEG2000-compression exports encode via `encodeJ2k` below — no-op/
-  // instant on native; on web this lazily instantiates the openjpeg_ffi
-  // WASM module the first time it's actually needed.
-  await initOpenJpegWasm();
 
   final sourceLevel = svsFile.levels[level];
   final effectiveTileSize = _resolveTileSize(
@@ -403,9 +396,6 @@ Future<void> streamSvsRegionAsSvsPreservingLevels(
       'really mean it.',
     );
   }
-
-  // See the matching comment in streamSvsRegionAsSvs.
-  await initOpenJpegWasm();
 
   final sourceLevel = svsFile.levels[level];
   final effectiveTileSize = _resolveTileSize(

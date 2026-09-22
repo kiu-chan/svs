@@ -32,8 +32,8 @@ export 'svs_pyramid_export_core.dart'
 /// [jp2kCompressionRatio] (default 0 = mathematically lossless) is the
 /// JPEG2000 target size-reduction ratio (e.g. 20 means roughly 20:1
 /// smaller than uncompressed) — only meaningful when `compression` is
-/// [SvsExportCompression.jpeg2000]; see `openjpeg_ffi`'s `encodeJ2k` for
-/// the exact semantics.
+/// [SvsExportCompression.jpeg2000]: the encoder truncates each code-block's
+/// coding passes to meet that size, losing the least error it can.
 ///
 /// [matchSourceCompression] (default `false`), when `true`, ignores
 /// `compression`/`quality`/`jp2kCompressionRatio` above and instead derives

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import '../codec/background_codec.dart';
 import '../errors.dart';
 import '../svs/svs_file.dart';
 import 'region_blit.dart';
@@ -98,9 +99,22 @@ Future<Uint8List> readSvsRegionRawRgba(
   final totalTiles = (lastTx - firstTx + 1) * (lastTy - firstTy + 1);
   var tilesDone = 0;
 
+  // Tiles decoded ahead of the one being composited — where decoding runs
+  // off this thread (JPEG2000 on the web), enough to keep it all busy.
+  final ahead = backgroundDecodeSlots;
   for (var ty = firstTy; ty <= lastTy; ty++) {
+    final pending = <int, Future<(_DecodedTile?, Object?, StackTrace?)>>{};
+    var next = firstTx;
     for (var tx = firstTx; tx <= lastTx; tx++) {
-      final tile = await _decodeTileRgba(lvl, tx, ty);
+      while (next <= lastTx && pending.length < ahead) {
+        pending[next] = _decodeTileRgba(lvl, next, ty).then(
+          (tile) => (tile, null, null),
+          onError: (Object e, StackTrace s) => (null, e, s),
+        );
+        next++;
+      }
+      final (tile, error, stack) = await pending.remove(tx)!;
+      if (error != null) Error.throwWithStackTrace(error, stack!);
       if (tile != null) {
         final plan = planTileBlit(
           clipLeft: validLeft,

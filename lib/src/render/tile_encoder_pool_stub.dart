@@ -3,8 +3,8 @@ import 'dart:typed_data';
 import '../codec/rgba_image.dart';
 import 'band_tile_encoder.dart';
 
-/// Encodes a pyramid export's tiles on the calling thread — the web has no
-/// isolates to spread them across.
+/// Encodes a pyramid export's tiles on the calling thread, where neither
+/// isolates (`dart:io` platforms) nor Web Workers (the web) are available.
 class TileEncoderPool {
   final BandTileEncoder _encoder;
 

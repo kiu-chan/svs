@@ -1,5 +1,41 @@
 ## 1.6.0
 
+* **JPEG2000 is now decoded and encoded by this package's own codec, and
+  the `openjpeg_ffi` dependency is gone** — `svs` depends on nothing beyond
+  Flutter, with no native library to build and no WebAssembly to load.
+  * The decoder is a complete JPEG2000 Part 1 implementation in pure Dart:
+    both wavelets and component transforms, tiles and tile-parts, layers,
+    every progression order and POC, precincts, every code-block style,
+    SOP/EPH, packed headers (PPM/PPT), ROI, any bit depth and subsampling,
+    and decoding at reduced resolution. On 39 codestreams OpenJPEG wrote
+    with all of those turned on, it matches OpenJPEG's output exactly, or
+    within 1 level where lossy decodes round differently, as it does on
+    real Aperio (Kakadu-encoded) tiles.
+  * The encoder, used by JPEG2000 exports, takes OpenJPEG's settings the
+    exports used before — lossless 5/3, or 9/7 with each code-block's
+    passes truncated by rate-distortion optimisation to meet
+    `jp2kCompressionRatio`. On real slide tiles its lossless files are the
+    size of OpenJPEG's (within 0.03%), and at the same ratio its lossy ones
+    keep the same quality (within 0.1 dB).
+  * A 240x240 JPEG2000 tile decodes in about 2.5 ms natively (OpenJPEG took
+    about 1.4 ms) and 3.8 ms as JavaScript; at reduced resolution, as a
+    zoomed-out view asks for, in 0.6-1.3 ms. Encoding one takes about
+    12.5 ms. Tier-1 keeps one flags word per stripe column, as OpenJPEG
+    does, so a column with nothing to code costs a single test and every
+    context is a table lookup; the wavelet transform folds the 9/7's
+    scaling steps into each sub-band's step size, interleaves each
+    code-block straight into the level it belongs to and lifts two columns
+    at a time through the vector unit where there is one; and the inverse
+    component transform, the level shift and the clamp to 8 bits are one
+    pass into the output image.
+* **JPEG2000 decoding and export encoding run on Web Workers on the web.**
+  Tiles no longer decode on the page's main thread, and a pyramid export's
+  tiles, or a flat image export, are encoded off it too: a few workers,
+  started from a script embedded in the package, split the work between
+  them. A page whose Content-Security-Policy blocks `blob:` workers falls
+  back to the main thread. In Chrome, four workers decoded 100 real
+  JPEG2000 tiles in 110 ms — 1.1 ms a tile, against 3.8 ms on the page's
+  own thread.
 * **Open a slide on the web without loading it into memory.**
   `SvsFile.openSource(RandomAccessByteSource)` opens a slide from any
   random-access byte source and reads only what it needs: the TIFF

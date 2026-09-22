@@ -53,18 +53,22 @@ jobs:
         working-directory: example
       - run: flutter build web
         working-directory: example
-      # The tests that exercise web-only behavior — the pure-Dart codecs,
-      # opening a slide without a filesystem (BlobByteSource included),
-      # streaming exports to disk (FileSystemWritableByteSink included), and
-      # BigTIFF's 64-bit fields, which dart2js can't read with ByteData's own
-      # accessors. Listed by name because a web test run compiles every file
+      # The tests that exercise web-only behavior — the pure-Dart codecs
+      # (JPEG2000 included) under dart2js's number semantics, the Web
+      # Workers they run on, opening a slide without a filesystem
+      # (BlobByteSource included), streaming exports to disk
+      # (FileSystemWritableByteSink included), and BigTIFF's 64-bit fields,
+      # which dart2js can't read with ByteData's own accessors. Listed by name because a web test run compiles every file
       # it's given, @TestOn('vm') ones too, and those import dart:io.
       - run: flutter pub get
       - run: >-
           flutter test --platform chrome
           test/blob_byte_source_test.dart
           test/codec_portable_test.dart
+          test/codec_worker_web_test.dart
           test/file_system_writable_byte_sink_test.dart
+          test/jpeg2000/j2k_portable_test.dart
+          test/jpeg2000/j2k_primitives_test.dart
           test/svs_file_bytes_test.dart
           test/svs_pyramid_export_sink_test.dart
           test/tiff_bigtiff_portable_test.dart

@@ -1,6 +1,6 @@
 // Manual, opt-in integration test against a real Aperio JPEG2000-compressed
 // slide (the well-known CMU-1-JP2K-33005 sample). Not a synthetic TIFF like
-// the rest of test/ — exercises real openjpeg_ffi decode + region stitching
+// the rest of test/ — exercises real JPEG2000 decode + region stitching
 // + format export end to end. Skips itself (does not fail) if the fixture
 // file isn't present on this machine, since it isn't checked into this repo.
 @TestOn('vm')

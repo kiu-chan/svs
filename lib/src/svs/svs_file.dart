@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
-import 'package:openjpeg_ffi/openjpeg_ffi.dart';
-
+import '../codec/background_codec.dart';
+import '../codec/jpeg2000/j2k_decoder.dart';
 import '../errors.dart';
 import '../io/byte_source.dart';
 import '../io/file_byte_source.dart';
@@ -318,8 +318,9 @@ class SvsLevel {
 
   /// Whether this level's JPEG tiles need `forceRgbColorTransform` (in
   /// `jpeg/jpeg_tables.dart`) applied before decode — see that function's
-  /// doc comment for why. Only relevant when [isJpeg]; JP2K tiles are
-  /// decoded by `openjpeg_ffi`, which has no equivalent blind spot.
+  /// doc comment for why. Only relevant when [isJpeg]; JP2K tiles go
+  /// through this package's own decoder, which has no equivalent blind
+  /// spot.
   bool get needsYCbCrFix =>
       isJpeg && photometricInterpretation == ApPhotometric.rgb;
 
@@ -427,8 +428,9 @@ class SvsLevel {
   /// and smaller when only a zoomed-out preview is needed. Throws
   /// [TileIoException] if the tile has fewer wavelet levels than that.
   ///
-  /// Decoding happens via `openjpeg_ffi` (native OpenJPEG) — see
-  /// [Jp2kDecodeException] for how decode failures surface.
+  /// Decoded by this package's own JPEG2000 decoder (pure Dart) — on the
+  /// web, on a Web Worker; a malformed codestream throws
+  /// [TileIoException].
   Future<Uint8List> readTileRgba(
     int tx,
     int ty, {
@@ -436,17 +438,13 @@ class SvsLevel {
   }) async {
     final rawTile = await _readRawTileBytes(tx, ty);
     if (rawTile.isEmpty) return rawTile;
-    // No-op/instant on native; on web this lazily instantiates the
-    // openjpeg_ffi WASM module the first time a JP2K tile is actually
-    // decoded, and is cheap to await again after that (internally cached).
-    await initOpenJpegWasm();
-    final Jp2kImage decoded;
+    final J2kImage decoded;
     try {
-      decoded = decodeJ2k(
+      decoded = await decodeJ2kInBackground(
         rawTile,
         reducedResolutionFactor: reducedResolutionFactor,
       );
-    } on Jp2kDecodeException catch (e) {
+    } on J2kDecodeException catch (e) {
       throw TileIoException(
         index,
         tx,
@@ -454,55 +452,12 @@ class SvsLevel {
         'JPEG2000 decode failed: ${e.message}',
       );
     }
-    var pixels = decoded.pixels;
-    var width = decoded.width;
-    var height = decoded.height;
-    final reducedWidth = _reducedExtent(tileWidth, reducedResolutionFactor);
-    final reducedHeight = _reducedExtent(tileLength, reducedResolutionFactor);
-    if (width > reducedWidth || height > reducedHeight) {
-      // openjpeg_ffi 0.3.1 reports a reduced decode at the codestream's full
-      // canvas size: the reduced image sits in the top-left corner, the rest
-      // is its edge pixels stretched out. Crop that corner back out — a
-      // no-op for a decoder that reports the reduced size itself.
-      pixels = _cropTopLeft(
-        pixels,
-        stride: width,
-        samplesPerPixel: decoded.numComponents,
-        width: reducedWidth,
-        height: reducedHeight,
-      );
-      width = reducedWidth;
-      height = reducedHeight;
-    }
     return expandRgbToRgba(
-      pixels,
-      width: width,
-      height: height,
+      decoded.pixels,
+      width: decoded.width,
+      height: decoded.height,
       samplesPerPixel: decoded.numComponents,
     );
-  }
-
-  static int _reducedExtent(int extent, int factor) =>
-      (extent + (1 << factor) - 1) >> factor;
-
-  static Uint8List _cropTopLeft(
-    Uint8List pixels, {
-    required int stride,
-    required int samplesPerPixel,
-    required int width,
-    required int height,
-  }) {
-    final out = Uint8List(width * height * samplesPerPixel);
-    for (var y = 0; y < height; y++) {
-      final src = y * stride * samplesPerPixel;
-      out.setRange(
-        y * width * samplesPerPixel,
-        (y + 1) * width * samplesPerPixel,
-        pixels,
-        src,
-      );
-    }
-    return out;
   }
 
   /// Every TIFF tag on this level's IFD, decoded — the "full info" dump for

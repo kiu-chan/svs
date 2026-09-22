@@ -18,7 +18,6 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  openjpeg_ffi: ^0.3.1
 
 dev_dependencies:
   flutter_test:
@@ -27,5 +26,8 @@ dev_dependencies:
   # Test-only: an independent decoder to check this package's own encoders
   # against, and a quick way to build JPEG fixtures.
   image: ^4.9.2
+  # Test-only, likewise for JPEG2000: OpenJPEG, to check this package's own
+  # JPEG2000 decoder and encoder against.
+  openjpeg_ffi: ^0.3.1
 
 flutter:

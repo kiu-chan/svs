@@ -33,9 +33,8 @@ abstract final class ApCompression {
   static const newJpeg = 7;
   static const deflate = 8;
 
-  /// JPEG2000, decoded via `openjpeg_ffi` (native OpenJPEG via FFI) rather
-  /// than pure Dart — the one deliberate exception to this package's
-  /// otherwise-pure-Dart rule. Empirically confirmed from real Aperio
+  /// JPEG2000, decoded and encoded by this package's own codec
+  /// (`codec/jpeg2000/`). Empirically confirmed from real Aperio
   /// JP2K-compressed SVS files rather than cited from the baseline TIFF
   /// spec — this value appears to be an Aperio/vendor convention.
   static const jp2k = 33005;

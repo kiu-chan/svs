@@ -6,7 +6,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
-import 'package:openjpeg_ffi/openjpeg_ffi.dart';
+import 'package:svs/src/codec/jpeg2000/j2k_encoder.dart';
 import 'package:svs/src/errors.dart';
 import 'package:svs/src/render/associated_image_decoder.dart';
 import 'package:svs/src/render/region_decoder.dart';

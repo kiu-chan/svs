@@ -1,8 +1,7 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:openjpeg_ffi/openjpeg_ffi.dart';
-
+import '../codec/jpeg2000/j2k_encoder.dart';
 import '../codec/jpeg_encoder.dart';
 import '../codec/rgba_image.dart';
 

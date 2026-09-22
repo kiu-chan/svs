@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart' show Offset, Size;
 
 import '../cache/disk_tile_cache.dart';
 import '../cache/tile_cache.dart';
+import '../codec/background_codec.dart';
 import '../io/tile_worker_pool.dart';
 import '../svs/svs_file.dart';
 import 'viewport_math.dart';
@@ -95,7 +96,10 @@ class LodController extends ChangeNotifier {
         _pump();
       },
       onError: (_) {
-        _maxInFlight = 1;
+        // Tiles come through this isolate, one at a time — or, where their
+        // decoding runs elsewhere anyway (JPEG2000 on the web's workers), a
+        // few at once.
+        _maxInFlight = backgroundDecodeSlots;
         _onCallingIsolate = true;
       },
     );
@@ -386,8 +390,8 @@ class LodController extends ChangeNotifier {
     final bytes = result.bytes;
     if (bytes == null) return (null, reduction);
     if (result.isRgba) {
-      // JPEG2000: already decoded to RGBA by the worker (via openjpeg_ffi,
-      // which has no main-isolate restriction). Aperio's JP2K tiles are
+      // JPEG2000: already decoded to RGBA by the worker (the pure-Dart
+      // decoder has no main-isolate restriction). Aperio's JP2K tiles are
       // always encoded at the full nominal tile-grid size (unlike JPEG, a
       // boundary tile can't come back cropped), so the reduced nominal size
       // is the correct buffer shape.
