@@ -85,8 +85,8 @@ class LodController extends ChangeNotifier {
                : Future<TileWorkerPool>.error(
                    UnsupportedError(
                      'SvsFile has no filesystem path (opened via '
-                     'openBytes); tiles are fetched/decoded on the calling '
-                     'isolate instead.',
+                     'openBytes or openSource); tiles are fetched/decoded '
+                     'on the calling isolate instead.',
                    ),
                  )) {
     poolFuture.then(

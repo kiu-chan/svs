@@ -1,9 +1,10 @@
 import 'dart:async';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:svs/svs.dart';
+
+import 'pick_slide.dart';
 
 void main() {
   runApp(const MyApp());
@@ -27,8 +28,9 @@ class MyApp extends StatelessWidget {
 /// On native platforms, enter the path to a local .svs (or tiled TIFF) file
 /// and view it with pan/zoom, a minimap, and a physical scale bar —
 /// everything `SvsImageView` provides out of the box. On the web (no
-/// filesystem path to type), a file picker reads the slide's bytes directly
-/// and opens it via `SvsFile.openBytes`.
+/// filesystem path to type), the browser's file picker chooses the slide and
+/// `SvsFile.openSource` reads it straight from the picked file, a slice at a
+/// time — see `pick_slide_web.dart`.
 ///
 /// For a full-featured demo app (file picker, associated-image previews,
 /// metadata inspector), see https://github.com/kiu-chan/svs_example.
@@ -59,11 +61,9 @@ class _SvsViewerPageState extends State<SvsViewerPage> {
   }
 
   Future<void> _pickAndOpen() async {
-    final result = await FilePicker.platform.pickFiles(withData: true);
-    final picked = result?.files.single;
-    final bytes = picked?.bytes;
-    if (bytes == null) return; // cancelled, or a platform that needs a path
-    await _open(() => SvsFile.openBytes(bytes));
+    final source = await pickSlideSource();
+    if (source == null) return; // cancelled
+    await _open(() => SvsFile.openSource(source));
   }
 
   Future<void> _open(Future<SvsFile> Function() openIt) async {

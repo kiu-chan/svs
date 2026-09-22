@@ -1,21 +1,29 @@
-// SvsFile.openBytes is the entry point for platforms with no filesystem
-// (the web) — this test proves it behaves identically to SvsFile.open(path)
-// for the operations that matter, and runs on every platform (including
-// web), unlike most of this package's other SvsFile tests which write a
-// fixture to a real file via dart:io and are tagged @TestOn('vm').
+// SvsFile.openBytes and SvsFile.openSource are the entry points for
+// platforms with no filesystem (the web) — this test proves they behave
+// identically to SvsFile.open(path) for the operations that matter, and runs
+// on every platform (including web), unlike most of this package's other
+// SvsFile tests which write a fixture to a real file via dart:io and are
+// tagged @TestOn('vm').
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:svs/src/errors.dart';
+import 'package:svs/src/io/byte_source.dart';
 import 'package:svs/src/svs/svs_file.dart';
 import 'package:svs/src/tiff/tiff_types.dart';
 
 import 'helpers/tiff_builder.dart';
 
+/// A single-level slide. Every tile is sparse (byte count 0) unless
+/// [tileOffsets]/[tileByteCounts] say otherwise — no real JPEG bytes are
+/// needed to exercise level/tile geometry.
 Uint8List _buildSparseSingleLevelSvs({
   required int width,
   required int height,
   required int tileSize,
   bool bigTiff = false,
+  List<int>? tileOffsets,
+  List<int>? tileByteCounts,
 }) {
   final tilesX = (width / tileSize).ceil();
   final tilesY = (height / tileSize).ceil();
@@ -36,19 +44,16 @@ Uint8List _buildSparseSingleLevelSvs({
         ),
         TestTag.ints(322, TiffType.long, [tileSize], Endian.little),
         TestTag.ints(323, TiffType.long, [tileSize], Endian.little),
-        // Every tile sparse (byte count 0) — no real JPEG bytes needed to
-        // exercise level/tile-geometry parity between open() and
-        // openBytes().
         TestTag.ints(
           324,
           TiffType.long,
-          List.filled(tileCount, 0),
+          tileOffsets ?? List.filled(tileCount, 0),
           Endian.little,
         ),
         TestTag.ints(
           325,
           TiffType.long,
-          List.filled(tileCount, 0),
+          tileByteCounts ?? List.filled(tileCount, 0),
           Endian.little,
         ),
       ],
@@ -122,4 +127,82 @@ void main() {
       throwsA(anything),
     );
   });
+
+  group('openSource', () {
+    test('reads only the directories, then just the tiles asked for', () async {
+      // Two 256 KB tiles stored after the TIFF structure. Their offsets
+      // don't change the structure's length (fixed-size LONG values), so
+      // build once to measure it, then again with the real offsets.
+      const tileBytes = 256 * 1024;
+      Uint8List build(int dataStart) => _buildSparseSingleLevelSvs(
+        width: 512,
+        height: 256,
+        tileSize: 256,
+        tileOffsets: [dataStart, dataStart + tileBytes],
+        tileByteCounts: [tileBytes, tileBytes],
+      );
+      final dataStart = build(0).length;
+      final slide = Uint8List(dataStart + 2 * tileBytes)
+        ..setAll(0, build(dataStart));
+      for (var i = 0; i < tileBytes; i++) {
+        slide[dataStart + tileBytes + i] = i & 0xff;
+      }
+
+      final source = _RecordingSource(slide);
+      final svs = await SvsFile.openSource(source);
+      addTearDown(svs.close);
+
+      expect(svs.path, isNull);
+      expect(svs.levels[0].tilesAcrossX, 2);
+      expect(source.bytesRead, lessThan(dataStart + 1));
+
+      final readBefore = source.bytesRead;
+      final tile = await svs.readTileJpegBytes(0, 1, 0);
+      expect(tile, hasLength(tileBytes));
+      expect(tile.sublist(0, 4), [0, 1, 2, 3]);
+      expect(source.reads, contains((dataStart + tileBytes, tileBytes)));
+      // The other tile was never read.
+      expect(source.bytesRead - readBefore, lessThan(tileBytes + 4096));
+    });
+
+    test('close closes the source', () async {
+      final source = _RecordingSource(
+        _buildSparseSingleLevelSvs(width: 256, height: 256, tileSize: 256),
+      );
+      final svs = await SvsFile.openSource(source);
+      expect(source.closed, isFalse);
+      await svs.close();
+      expect(source.closed, isTrue);
+    });
+
+    test('closes the source when the slide fails to open', () async {
+      final source = _RecordingSource(Uint8List.fromList([1, 2, 3]));
+      await expectLater(
+        SvsFile.openSource(source),
+        throwsA(isA<SvsFormatException>()),
+      );
+      expect(source.closed, isTrue);
+    });
+  });
+}
+
+/// Serves [_bytes] like `openBytes` does, but records every read and
+/// whether it was closed.
+class _RecordingSource implements RandomAccessByteSource {
+  final MemoryByteSource _bytes;
+  final reads = <(int, int)>[];
+  var closed = false;
+
+  _RecordingSource(Uint8List bytes) : _bytes = MemoryByteSource(bytes);
+
+  int get bytesRead => reads.fold(0, (sum, read) => sum + read.$2);
+
+  @override
+  Future<Uint8List> readRange(int offset, int length) {
+    reads.add((offset, length));
+    return _bytes.readRange(offset, length);
+  }
+
+  @override
+  Future<void> close() async => closed = true;
 }

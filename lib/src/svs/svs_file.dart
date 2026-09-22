@@ -526,7 +526,7 @@ class SvsFile {
   final TiffFile _tiff;
 
   /// The path this file was opened from, or null if it was opened via
-  /// [openBytes]. Kept so a background isolate can reopen the same file
+  /// [openBytes] or [openSource]. Kept so a background isolate can reopen the same file
   /// independently (see `TileWorkerPool`) — a file handle can't be shared
   /// across isolates. When null, `TileWorkerPool` can't reopen this file, so
   /// tiles are fetched/decoded on the calling isolate instead (see
@@ -562,15 +562,35 @@ class SvsFile {
     }
   }
 
-  /// Opens a slide already fully in memory as [bytes] — the entry point for
-  /// platforms with no filesystem (the web), and also useful natively for
-  /// bytes that already came from somewhere else (e.g. a network fetch).
-  /// The returned [SvsFile.path] is null, since there's no reopenable
-  /// filesystem path — see that field's doc comment for what that means for
-  /// background tile fetching.
-  static Future<SvsFile> openBytes(Uint8List bytes) async {
-    final source = MemoryByteSource(bytes);
-    final tiff = await TiffFile.open(source);
+  /// Opens a slide already fully in memory as [bytes] (e.g. from a network
+  /// fetch). The returned [SvsFile.path] is null, since there's no
+  /// reopenable filesystem path — see that field's doc comment for what that
+  /// means for background tile fetching.
+  ///
+  /// This holds the whole slide in memory. To read only the parts actually
+  /// needed instead — on the web, straight from a picked `File` — use
+  /// [openSource].
+  static Future<SvsFile> openBytes(Uint8List bytes) =>
+      openSource(MemoryByteSource(bytes));
+
+  /// Opens a slide from [source], reading only the byte ranges it needs: the
+  /// TIFF directories up front, then each tile as it's requested. The way to
+  /// view a slide larger than memory where there's no filesystem path to
+  /// give [open] — on the web, `package:svs/svs_web.dart`'s `BlobByteSource`
+  /// reads a picked or dropped `File` this way, and any other storage (e.g.
+  /// HTTP `Range` requests) just needs its own [RandomAccessByteSource].
+  ///
+  /// The returned file owns [source]: [close] closes it, and so does this
+  /// method if the slide fails to open. [path] is null, as for [openBytes].
+  static Future<SvsFile> openSource(RandomAccessByteSource source) async {
+    final TiffFile tiff;
+    try {
+      tiff = await TiffFile.open(source);
+    } catch (_) {
+      await source.close();
+      rethrow;
+    }
+
     try {
       return await _fromTiff(tiff, null);
     } catch (_) {

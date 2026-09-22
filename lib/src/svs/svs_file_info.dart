@@ -29,7 +29,8 @@ class SvsIfdInfo {
 /// `metadata.raw`, [SvsLevel.readTags], [SvsAssociatedImage.readTags]) for
 /// callers that only need a specific field.
 class SvsFileInfo {
-  /// The file's path, or null if it was opened via `SvsFile.openBytes`.
+  /// The file's path, or null if it was opened via `SvsFile.openBytes` or
+  /// `SvsFile.openSource`.
   final String? path;
   final bool isBigTiff;
   final Endian byteOrder;

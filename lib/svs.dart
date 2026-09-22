@@ -7,6 +7,7 @@ export 'src/annotation/svs_measurement.dart';
 export 'src/cache/disk_tile_cache.dart';
 export 'src/cache/tile_cache.dart' show TileCache;
 export 'src/errors.dart';
+export 'src/io/byte_source.dart' show RandomAccessByteSource;
 export 'src/render/associated_image_decoder.dart';
 export 'src/render/image_adjustments.dart';
 export 'src/render/image_export.dart';

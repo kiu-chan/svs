@@ -4,6 +4,7 @@ Future<RandomAccessByteSource> openFileByteSource(String path) {
   throw UnsupportedError(
     'Opening an SvsFile by filesystem path is not supported on this '
     'platform (e.g. the web, which has no filesystem). Use '
-    'SvsFile.openBytes(bytes) instead.',
+    'SvsFile.openSource (on the web, with a BlobByteSource) or '
+    'SvsFile.openBytes instead.',
   );
 }

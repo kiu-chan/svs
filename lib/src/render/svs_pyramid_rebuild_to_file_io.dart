@@ -57,8 +57,9 @@ Future<File> rebuildSvsPyramidToFile(
 /// file" option ([rebuildSvsPyramidToFile] is the "new file next to it" one).
 ///
 /// Requires [svsFile] to have been opened with [SvsFile.open] (a real
-/// filesystem path) rather than [SvsFile.openBytes] — throws [ArgumentError]
-/// otherwise, since there's then no source file to overwrite.
+/// filesystem path) rather than [SvsFile.openBytes] or [SvsFile.openSource]
+/// — throws [ArgumentError] otherwise, since there's then no source file to
+/// overwrite.
 ///
 /// The rebuilt pyramid is first streamed in full to a temporary file next to
 /// the original (`<path>.rebuild.tmp`, same directory, so the final swap
@@ -102,7 +103,8 @@ Future<SvsFile> rebuildSvsPyramidInPlace(
   if (path == null) {
     throw ArgumentError(
       'rebuildSvsPyramidInPlace requires svsFile.path (i.e. svsFile must '
-      'have been opened via SvsFile.open, not SvsFile.openBytes) — there is '
+      'have been opened via SvsFile.open, not SvsFile.openBytes or '
+      'SvsFile.openSource) — there is '
       'no source file to overwrite otherwise. Use rebuildSvsPyramid or '
       'rebuildSvsPyramidToFile instead.',
     );

@@ -98,10 +98,15 @@ A few things are unavoidably different on the web, since it has no
 filesystem and no background isolates:
 
 * **No filesystem path**: `SvsFile.open(path)` isn't usable in a browser.
-  Use `SvsFile.openBytes(bytes)` instead — feed it the slide's bytes
-  directly (e.g. from an `<input type=file>`/`package:file_picker` pick, or
-  a network fetch). `SvsFile.path` is `null` for a file opened this way. See
-  `example/` for a working file-picker-based web entry point.
+  Open the `File` the user picked or dropped with
+  `SvsFile.openSource(BlobByteSource(file))` instead (`BlobByteSource` is in
+  `package:svs/svs_web.dart`). It reads the file a slice at a time, only
+  the parts actually viewed, so a multi-GB slide never has to fit in the
+  tab's memory. For slides stored elsewhere, e.g. on a server that answers
+  HTTP `Range` requests, implement your own `RandomAccessByteSource`.
+  `SvsFile.openBytes(bytes)` still works for bytes already in memory.
+  `SvsFile.path` is `null` for a file opened either way. See `example/` for
+  a working web file picker.
 * **No background-isolate decoding**: tile fetch/JPEG2000 decode runs on the
   calling thread instead of a worker isolate — this falls back
   automatically, no code changes needed, but a JP2K-heavy slide may feel
@@ -113,8 +118,8 @@ filesystem and no background isolates:
   `exportAssociatedImageToFile`, `exportSvsLevelToFile`,
   `exportSvsRegionAsSvsToFile`, `exportSvsRegionAsSvsPreservingLevelsToFile`,
   `rebuildSvsPyramidToFile`, and `rebuildSvsPyramidInPlace` all write to a
-  filesystem path (the last two of those don't even fit within `SvsFile
-  .openBytes`'s pathless model, since there's no source file to overwrite)
+  filesystem path (the last two of those don't even fit within a pathless
+  `SvsFile`, since there's no source file to overwrite)
   and so aren't available on the web. Use their byte-returning siblings
   (`exportSvsRegion`, `exportAssociatedImage`, `exportSvsLevel`,
   `exportSvsRegionAsSvs`, `exportSvsRegionAsSvsPreservingLevels`,
@@ -143,12 +148,16 @@ SvsImageView(svsFile: svsFile);
 await svsFile.close();
 ```
 
-On the web (no filesystem path to open), use `SvsFile.openBytes` instead —
-see [Platform support](#platform-support):
+On the web (no filesystem path to open), open the picked `File` with
+`SvsFile.openSource` instead — see [Platform support](#platform-support).
+`svs_web.dart` needs `dart:js_interop`, so import it only from web code (behind
+a conditional import in an app that also targets other platforms):
 
 ```dart
-final bytes = await pickedSlideBytes(); // e.g. from package:file_picker
-final svsFile = await SvsFile.openBytes(bytes);
+import 'package:svs/svs_web.dart';
+
+// file: a package:web `File`, e.g. from an <input type="file"> or a drop.
+final svsFile = await SvsFile.openSource(BlobByteSource(file));
 ```
 
 `SvsImageView` handles pan/zoom gestures, tile streaming, and the minimap/
@@ -508,7 +517,7 @@ succeeds), and returns a freshly-reopened `SvsFile` on the result:
 
 ```dart
 // svsFile must have been opened with SvsFile.open (a real path) —
-// SvsFile.openBytes has no file to overwrite.
+// SvsFile.openBytes/openSource have no file to overwrite.
 svsFile = await rebuildSvsPyramidInPlace(svsFile, levelCount: 6);
 ```
 

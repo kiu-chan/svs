@@ -1,5 +1,19 @@
-## 1.5.1
+## 1.6.0
 
+* **Open a slide on the web without loading it into memory.**
+  `SvsFile.openSource(RandomAccessByteSource)` opens a slide from any
+  random-access byte source and reads only what it needs: the TIFF
+  directories up front, then each tile as it's viewed. The new web-only
+  library `package:svs/svs_web.dart` adds `BlobByteSource`, which reads a
+  browser `File` or `Blob` a slice at a time, so
+  `SvsFile.openSource(BlobByteSource(file))` views a multi-GB slide that
+  `SvsFile.openBytes` would first have to copy whole into the tab's memory.
+  `RandomAccessByteSource` is now public: implement it to read slides from
+  other storage, such as a server that answers HTTP `Range` requests. The
+  example app's web picker now uses this, and no longer depends on
+  `file_picker`. In Chrome, opening a real 1.66 GB, 81671x42699 slide this
+  way read 2.4 KB, and decoding a 512x512 full-resolution crop from it read
+  about 0.5 MB more.
 * **BigTIFF now works on the web.** dart2js and DDC throw from
   `ByteData.getUint64`/`setUint64`, which the TIFF reader and writer used
   for every BigTIFF offset and count. So on a JS web build (the default
