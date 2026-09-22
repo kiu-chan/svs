@@ -56,9 +56,8 @@ Future<File> exportSvsRegionAsSvsToFile(
       onProgress: onProgress,
     );
   } finally {
-    // The core only closes the sink once it reaches its own try/finally, so
-    // an argument-validation throw before that point would otherwise leak
-    // the handle — which on Windows blocks deleting the partial file.
+    // Closed whether or not the export succeeded: leaking the handle would,
+    // on Windows, block deleting the partial file.
     await sink.close();
   }
   return file;
@@ -138,9 +137,8 @@ class _FileByteSink implements RandomAccessByteSink {
   @override
   Future<int> position() => _raf.position();
 
-  /// Idempotent: the streaming core closes the sink itself on its normal
-  /// path, and the `*ToFile` wrappers close it again to cover early throws —
-  /// a second `RandomAccessFile.close` would fail with "File closed".
+  /// Idempotent — a second `RandomAccessFile.close` would fail with "File
+  /// closed".
   @override
   Future<void> close() async {
     if (_closed) return;

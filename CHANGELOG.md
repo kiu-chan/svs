@@ -14,6 +14,21 @@
   `file_picker`. In Chrome, opening a real 1.66 GB, 81671x42699 slide this
   way read 2.4 KB, and decoding a 512x512 full-resolution crop from it read
   about 0.5 MB more.
+* **Stream pyramid exports to disk on the web.** The byte-returning
+  `exportSvsRegionAsSvs`, `exportSvsRegionAsSvsPreservingLevels` and
+  `rebuildSvsPyramid` build the whole output in memory, and the web had no
+  alternative, so rebuilding a large slide could exhaust the tab's memory.
+  New `exportSvsRegionAsSvsToSink`, `exportSvsRegionAsSvsPreservingLevelsToSink`
+  and `rebuildSvsPyramidToSink` stream it into a `RandomAccessByteSink`
+  (now public) instead, holding about one row-band at a time however large
+  the output. They work on every platform and write exactly the bytes the
+  in-memory versions return. They never close the sink, so the caller can
+  commit or discard the file depending on the outcome. `svs_web.dart`'s new
+  `FileSystemWritableByteSink` writes through a
+  `FileSystemWritableFileStream`, from the origin private file system or
+  `showSaveFilePicker()`, coalescing writes into 4 MB chunks; `close()`
+  commits the file and `abort()` discards it. In Chrome, a 16384x16384 crop
+  of a real slide streamed this way into a 47 MB file.
 * **BigTIFF now works on the web.** dart2js and DDC throw from
   `ByteData.getUint64`/`setUint64`, which the TIFF reader and writer used
   for every BigTIFF offset and count. So on a JS web build (the default

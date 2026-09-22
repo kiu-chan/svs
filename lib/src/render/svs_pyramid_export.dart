@@ -82,8 +82,10 @@ export 'svs_pyramid_export_core.dart'
 /// each band of the source is processed.
 ///
 /// For a crop large enough that holding the whole output in memory is a
-/// concern, prefer `exportSvsRegionAsSvsToFile` (native platforms only,
-/// where a real filesystem exists), which streams straight to disk instead.
+/// concern, prefer [exportSvsRegionAsSvsToSink] (every platform — on the
+/// web, with `package:svs/svs_web.dart`'s `FileSystemWritableByteSink`) or
+/// `exportSvsRegionAsSvsToFile` (native platforms only, where a real
+/// filesystem exists), which stream straight to disk instead.
 ///
 /// [levelCount], if given, caps how many levels the output pyramid gets —
 /// `null` (default) keeps the natural halve-to-one-tile count described
@@ -148,6 +150,63 @@ Future<Uint8List> exportSvsRegionAsSvs(
   return sink.toBytes();
 }
 
+/// Same as [exportSvsRegionAsSvs], but streams the encoded file into [sink]
+/// instead of returning it — the memory-bounded way to export a crop on any
+/// platform, including the web.
+///
+/// {@template svs.exportToSink}
+/// [sink] must be open, empty and positioned at 0: the file is written from
+/// offset 0, and the export seeks back into its header to fill in the tile
+/// offsets once the tiles are written. Memory stays bounded to about one
+/// row-band of the source at a time, however large the output.
+///
+/// This function never closes [sink]. Close it once this completes to
+/// finish the file (for a `FileSystemWritableByteSink`, closing is what
+/// commits it); if this throws, what [sink] holds is incomplete — discard
+/// it (e.g. `FileSystemWritableByteSink.abort`).
+/// {@endtemplate}
+Future<void> exportSvsRegionAsSvsToSink(
+  SvsFile svsFile, {
+  required RandomAccessByteSink sink,
+  required int level,
+  required int x,
+  required int y,
+  required int width,
+  required int height,
+  int? tileSize,
+  int quality = 90,
+  SvsExportCompression compression = SvsExportCompression.jpeg,
+  double jp2kCompressionRatio = 0,
+  bool matchSourceCompression = false,
+  int? maxPixels,
+  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  bool includeLabelAndMacroImages = true,
+  bool includeSourceMetadata = true,
+  int? levelCount,
+  SvsPyramidRebuildEffort effort = SvsPyramidRebuildEffort.balanced,
+  void Function(double progress)? onProgress,
+}) => streamSvsRegionAsSvs(
+  svsFile,
+  sink: sink,
+  level: level,
+  x: x,
+  y: y,
+  width: width,
+  height: height,
+  tileSize: tileSize,
+  quality: quality,
+  compression: compression,
+  jp2kCompressionRatio: jp2kCompressionRatio,
+  matchSourceCompression: matchSourceCompression,
+  maxPixels: maxPixels,
+  adjustments: adjustments,
+  includeLabelAndMacroImages: includeLabelAndMacroImages,
+  includeSourceMetadata: includeSourceMetadata,
+  levelCount: levelCount,
+  effort: effort,
+  onProgress: onProgress,
+);
+
 /// Crops [level]'s (`x`,`y`)-`width`x`height` rectangle — same coordinate
 /// semantics as [exportSvsRegionAsSvs] — into a new pyramidal `.svs` file
 /// whose pyramid levels are cropped **directly from the source's own
@@ -180,6 +239,10 @@ Future<Uint8List> exportSvsRegionAsSvs(
 /// preserving function has no `levelCount` equivalent, since its level count
 /// is inherently tied to the source's own; use [exportSvsRegionAsSvs] or
 /// `rebuildSvsPyramid` instead if changing it is the goal).
+///
+/// Holds the whole output in memory, like [exportSvsRegionAsSvs]; for a
+/// large crop, prefer [exportSvsRegionAsSvsPreservingLevelsToSink] or
+/// `exportSvsRegionAsSvsPreservingLevelsToFile`.
 ///
 /// Must run on the main isolate, like [readSvsRegion].
 Future<Uint8List> exportSvsRegionAsSvsPreservingLevels(
@@ -224,3 +287,48 @@ Future<Uint8List> exportSvsRegionAsSvsPreservingLevels(
   );
   return sink.toBytes();
 }
+
+/// Same as [exportSvsRegionAsSvsPreservingLevels], but streams the encoded
+/// file into [sink] instead of returning it — the memory-bounded way to
+/// export a crop on any platform, including the web.
+///
+/// {@macro svs.exportToSink}
+Future<void> exportSvsRegionAsSvsPreservingLevelsToSink(
+  SvsFile svsFile, {
+  required RandomAccessByteSink sink,
+  required int level,
+  required int x,
+  required int y,
+  required int width,
+  required int height,
+  int? tileSize,
+  int quality = 90,
+  SvsExportCompression compression = SvsExportCompression.jpeg,
+  double jp2kCompressionRatio = 0,
+  bool matchSourceCompression = false,
+  int? maxPixels,
+  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  bool includeLabelAndMacroImages = true,
+  bool includeSourceMetadata = true,
+  SvsPyramidRebuildEffort effort = SvsPyramidRebuildEffort.balanced,
+  void Function(double progress)? onProgress,
+}) => streamSvsRegionAsSvsPreservingLevels(
+  svsFile,
+  sink: sink,
+  level: level,
+  x: x,
+  y: y,
+  width: width,
+  height: height,
+  tileSize: tileSize,
+  quality: quality,
+  compression: compression,
+  jp2kCompressionRatio: jp2kCompressionRatio,
+  matchSourceCompression: matchSourceCompression,
+  maxPixels: maxPixels,
+  adjustments: adjustments,
+  includeLabelAndMacroImages: includeLabelAndMacroImages,
+  includeSourceMetadata: includeSourceMetadata,
+  effort: effort,
+  onProgress: onProgress,
+);

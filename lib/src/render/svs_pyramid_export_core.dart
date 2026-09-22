@@ -77,11 +77,12 @@ Future<void> _yieldForEffort(
   }
 }
 
-/// Streams `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsToFile`'s pyramid
-/// into [sink] (already open — this function neither opens nor closes
-/// anything filesystem-specific, only [sink] itself, so it's usable from a
-/// `MemoryByteSink` on every platform or a `dart:io`-backed sink natively).
-/// See those public functions' doc comments for parameter semantics.
+/// Streams `exportSvsRegionAsSvs`/`exportSvsRegionAsSvsToFile`/
+/// `exportSvsRegionAsSvsToSink`'s pyramid into [sink], which must be open,
+/// empty, and positioned at 0. This function neither opens nor closes it —
+/// closing is how some sinks commit their file, so that's the caller's call,
+/// made knowing whether the export succeeded. See those public functions'
+/// doc comments for parameter semantics.
 Future<void> streamSvsRegionAsSvs(
   SvsFile svsFile, {
   required RandomAccessByteSink sink,
@@ -302,7 +303,6 @@ Future<void> streamSvsRegionAsSvs(
     );
   } finally {
     await tileEncoder?.close();
-    await sink.close();
   }
 }
 
@@ -590,7 +590,6 @@ Future<void> streamSvsRegionAsSvsPreservingLevels(
     );
   } finally {
     await tileEncoder?.close();
-    await sink.close();
   }
 }
 

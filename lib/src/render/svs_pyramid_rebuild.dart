@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../io/byte_sink.dart';
 import '../svs/svs_file.dart';
 import 'image_adjustments.dart';
 import 'region_decoder.dart';
@@ -43,9 +44,10 @@ export 'svs_pyramid_export_core.dart' show SvsPyramidRebuildEffort;
 /// Built by streaming the source band-by-band and buffering the output
 /// pyramid in memory as it's built, so it needs as many bytes of RAM as the
 /// output ends up being. For a slide large enough that this is a concern,
-/// prefer `rebuildSvsPyramidToFile` (writes a new file) or
-/// `rebuildSvsPyramidInPlace` (overwrites the source file itself) instead —
-/// both native platforms only, where a real filesystem exists — which
+/// prefer [rebuildSvsPyramidToSink] (every platform — on the web, with
+/// `package:svs/svs_web.dart`'s `FileSystemWritableByteSink`), or natively
+/// `rebuildSvsPyramidToFile` (writes a new file) or
+/// `rebuildSvsPyramidInPlace` (overwrites the source file itself), which
 /// stream straight to disk.
 ///
 /// Must run on the main isolate, like [readSvsRegion].
@@ -66,6 +68,49 @@ Future<Uint8List> rebuildSvsPyramid(
   final level0 = svsFile.levels[0];
   return exportSvsRegionAsSvs(
     svsFile,
+    level: 0,
+    x: 0,
+    y: 0,
+    width: level0.width,
+    height: level0.height,
+    tileSize: tileSize,
+    quality: quality,
+    compression: compression,
+    jp2kCompressionRatio: jp2kCompressionRatio,
+    matchSourceCompression: matchSourceCompression,
+    adjustments: adjustments,
+    includeLabelAndMacroImages: includeLabelAndMacroImages,
+    includeSourceMetadata: includeSourceMetadata,
+    levelCount: levelCount,
+    effort: effort,
+    onProgress: onProgress,
+  );
+}
+
+/// Same as [rebuildSvsPyramid], but streams the encoded file into [sink]
+/// instead of returning it — the memory-bounded way to rebuild a slide on
+/// any platform, including the web.
+///
+/// {@macro svs.exportToSink}
+Future<void> rebuildSvsPyramidToSink(
+  SvsFile svsFile, {
+  required RandomAccessByteSink sink,
+  int? levelCount,
+  int? tileSize,
+  int quality = 90,
+  SvsExportCompression compression = SvsExportCompression.jpeg,
+  double jp2kCompressionRatio = 0,
+  bool matchSourceCompression = true,
+  SvsImageAdjustments adjustments = SvsImageAdjustments.none,
+  bool includeLabelAndMacroImages = true,
+  bool includeSourceMetadata = true,
+  SvsPyramidRebuildEffort effort = SvsPyramidRebuildEffort.balanced,
+  void Function(double progress)? onProgress,
+}) {
+  final level0 = svsFile.levels[0];
+  return exportSvsRegionAsSvsToSink(
+    svsFile,
+    sink: sink,
     level: 0,
     x: 0,
     y: 0,

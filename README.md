@@ -49,8 +49,9 @@ other.
   openable by this package (or any other tiled-TIFF/OpenSlide-aware tool)
   and pannable/zoomable like any other slide.
 * **Rebuild a slide's own pyramid level count** (`rebuildSvsPyramid`, or
-  `rebuildSvsPyramidToFile`/`rebuildSvsPyramidInPlace` to write straight to
-  disk instead of returning bytes): re-encode a whole existing slide with
+  `rebuildSvsPyramidToFile`/`rebuildSvsPyramidInPlace`/
+  `rebuildSvsPyramidToSink` to write straight to disk instead of returning
+  bytes): re-encode a whole existing slide with
   more levels (auto-computed for a smooth, evenly-2x-stepped zoom, since real
   slides often aren't evenly stepped) or fewer (an explicit, smaller
   `levelCount`) — either to a new file next to the original, or overwriting
@@ -120,11 +121,15 @@ filesystem and no background isolates:
   `rebuildSvsPyramidToFile`, and `rebuildSvsPyramidInPlace` all write to a
   filesystem path (the last two of those don't even fit within a pathless
   `SvsFile`, since there's no source file to overwrite)
-  and so aren't available on the web. Use their byte-returning siblings
-  (`exportSvsRegion`, `exportAssociatedImage`, `exportSvsLevel`,
-  `exportSvsRegionAsSvs`, `exportSvsRegionAsSvsPreservingLevels`,
-  `rebuildSvsPyramid`) and trigger a browser download yourself with the
-  resulting bytes.
+  and so aren't available on the web. The pyramid exports have `*ToSink`
+  siblings instead (`exportSvsRegionAsSvsToSink`,
+  `exportSvsRegionAsSvsPreservingLevelsToSink`, `rebuildSvsPyramidToSink`):
+  given a `FileSystemWritableByteSink`, they stream the output to a file on
+  disk, so even a whole-slide rebuild never has to fit in memory — see
+  [Streaming to disk on the web](#streaming-to-disk-on-the-web). For the
+  flat-image exports, use their byte-returning siblings (`exportSvsRegion`,
+  `exportAssociatedImage`, `exportSvsLevel`) and trigger a browser download
+  yourself with the resulting bytes.
 
 ## Getting started
 
@@ -526,8 +531,49 @@ don't keep using the instance you passed in; the returned `SvsFile` replaces
 it. If anything goes wrong (mid-rebuild, or during the final swap), the
 original file is left completely untouched and the temp file is cleaned up.
 This function, like `rebuildSvsPyramidToFile`, is native platforms only
-(where a real filesystem exists) — on the web, use the byte-returning
-`rebuildSvsPyramid` together with a browser download instead.
+(where a real filesystem exists) — on the web, see below.
+
+#### Streaming to disk on the web
+
+The web has no `*ToFile` functions, but every pyramid export has a
+`*ToSink` sibling (`exportSvsRegionAsSvsToSink`,
+`exportSvsRegionAsSvsPreservingLevelsToSink`, `rebuildSvsPyramidToSink`)
+that streams the output into a `RandomAccessByteSink` instead of returning
+it. `package:svs/svs_web.dart`'s `FileSystemWritableByteSink` writes to a
+browser file through a `FileSystemWritableFileStream` — from the origin
+private file system (every current browser), or from `showSaveFilePicker()`
+(Chromium browsers). The browser commits the file on `close()`; `abort()`
+discards it:
+
+```dart
+import 'dart:js_interop';
+
+import 'package:svs/svs_web.dart';
+import 'package:web/web.dart' as web;
+
+final root = await web.window.navigator.storage.getDirectory().toDart;
+final handle = await root
+    .getFileHandle('rebuilt.svs', web.FileSystemGetFileOptions(create: true))
+    .toDart;
+final sink = FileSystemWritableByteSink(await handle.createWritable().toDart);
+try {
+  await rebuildSvsPyramidToSink(svsFile, sink: sink, levelCount: 6);
+} catch (_) {
+  await sink.abort();
+  rethrow;
+}
+await sink.close();
+
+// Download it: the browser reads the finished file from disk, not memory.
+web.HTMLAnchorElement()
+  ..href = web.URL.createObjectURL(await handle.getFile().toDart)
+  ..download = 'rebuilt.svs'
+  ..click();
+```
+
+The `*ToSink` functions work on native platforms too, with any
+`RandomAccessByteSink` you implement. They never close the sink themselves:
+that's yours to do once you know whether the export succeeded.
 
 #### Controlling RAM/CPU usage while rebuilding
 
@@ -553,9 +599,9 @@ foreground screen; `.high` yields less often for the fastest throughput. None
 of the three settings change peak memory, which is already bounded by
 design — a couple of tile-row bands per level in flight at once, never the
 whole image — regardless of `effort`. For genuine RAM control, prefer the
-disk-streamed `rebuildSvsPyramidToFile`/`rebuildSvsPyramidInPlace` over the
-in-memory `rebuildSvsPyramid`, which needs as many bytes of RAM as the whole
-rebuilt file.
+disk-streamed `rebuildSvsPyramidToFile`/`rebuildSvsPyramidInPlace` (or, on
+the web, `rebuildSvsPyramidToSink`) over the in-memory `rebuildSvsPyramid`,
+which needs as many bytes of RAM as the whole rebuilt file.
 
 ### Annotations
 

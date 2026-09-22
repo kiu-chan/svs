@@ -1,14 +1,20 @@
+/// @docImport '../render/svs_pyramid_export.dart';
+/// @docImport '../render/svs_pyramid_rebuild.dart';
+library;
+
 import 'dart:typed_data';
 
-/// A random-access sink of bytes: sequential writes at a movable cursor,
-/// with the ability to seek back and overwrite already-written bytes (used
-/// to backpatch a TIFF header's offset/byte-count fields once their real
-/// values are known — see `svs_pyramid_export_core.dart`). Mirrors
-/// `byte_source.dart`'s read-side abstraction. [MemoryByteSink] is the only
-/// implementation that needs to be platform-neutral (used by every
-/// byte-returning export function on every platform); a `dart:io`
-/// `RandomAccessFile`-backed implementation lives natively alongside the
-/// `*ToFile` export functions that need it.
+/// A random-access destination for an exported slide's bytes: sequential
+/// writes at a movable cursor, plus seeking back to overwrite bytes already
+/// written — a pyramid export writes its TIFF header first and fills in the
+/// tile offsets once the tiles themselves are written.
+///
+/// Pass one to [exportSvsRegionAsSvsToSink],
+/// [exportSvsRegionAsSvsPreservingLevelsToSink] or [rebuildSvsPyramidToSink]
+/// to stream the output somewhere other than memory. On the web,
+/// `package:svs/svs_web.dart`'s `FileSystemWritableByteSink` writes to a
+/// file on disk this way; implement this class yourself for any other
+/// destination.
 abstract class RandomAccessByteSink {
   /// Writes [bytes] starting at the current position, advancing it by
   /// `bytes.length`.
@@ -20,8 +26,8 @@ abstract class RandomAccessByteSink {
   /// The current write cursor position.
   Future<int> position();
 
-  /// Releases any underlying resource (a file handle; a no-op for
-  /// [MemoryByteSink]).
+  /// Releases any underlying resource, e.g. a file handle. The `*ToSink`
+  /// exports never call this: closing is up to whoever opened the sink.
   Future<void> close();
 }
 
