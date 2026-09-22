@@ -198,7 +198,7 @@ Uint8List encodeTiffInts(
       case TiffType.long:
         data.setUint32(o, values[i], order);
       case TiffType.long8:
-        data.setUint64(o, values[i], order);
+        data.setUint64Portable(o, values[i], order);
       default:
         throw UnsupportedError('encodeTiffInts does not support type $type');
     }
@@ -449,14 +449,14 @@ PyramidHeaderLayout planPyramidHeader(
   data.setUint16(2, 43, order); // BigTIFF magic
   data.setUint16(4, 8, order); // offset byte size
   data.setUint16(6, 0, order); // reserved
-  data.setUint64(8, ifdOffsets.isEmpty ? 0 : ifdOffsets[0], order);
+  data.setUint64Portable(8, ifdOffsets.isEmpty ? 0 : ifdOffsets[0], order);
 
   final patches = <PyramidLevelPatch>[];
   final associatedPatches = <AssociatedImagePatch>[];
   for (var i = 0; i < ifdPlans.length; i++) {
     final plan = ifdPlans[i];
     final ifdBase = ifdOffsets[i];
-    data.setUint64(ifdBase, plan.tags.length, order);
+    data.setUint64Portable(ifdBase, plan.tags.length, order);
 
     var entryPos = ifdBase + dirCountFieldSize;
     int? tileOffsetsValuePos;
@@ -467,7 +467,7 @@ PyramidHeaderLayout planPyramidHeader(
       final tag = plan.tags[j];
       data.setUint16(entryPos, tag.id, order);
       data.setUint16(entryPos + 2, tag.type, order);
-      data.setUint64(entryPos + 4, tag.count, order);
+      data.setUint64Portable(entryPos + 4, tag.count, order);
 
       final blobOffset = plan.blobOffsets[j];
       final valuePos = blobOffset ?? (entryPos + 12);
@@ -485,7 +485,7 @@ PyramidHeaderLayout planPyramidHeader(
           );
         }
       } else {
-        data.setUint64(entryPos + 12, blobOffset, order);
+        data.setUint64Portable(entryPos + 12, blobOffset, order);
         if (tag.encodedValue != null) {
           out.setRange(
             blobOffset,
@@ -498,7 +498,7 @@ PyramidHeaderLayout planPyramidHeader(
     }
 
     final nextIfdOffset = i + 1 < ifdPlans.length ? ifdOffsets[i + 1] : 0;
-    data.setUint64(entryPos, nextIfdOffset, order);
+    data.setUint64Portable(entryPos, nextIfdOffset, order);
 
     if (i < levels.length) {
       patches.add(

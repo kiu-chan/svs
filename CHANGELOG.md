@@ -1,3 +1,16 @@
+## 1.5.1
+
+* **BigTIFF now works on the web.** dart2js and DDC throw from
+  `ByteData.getUint64`/`setUint64`, which the TIFF reader and writer used
+  for every BigTIFF offset and count. So on a JS web build (the default
+  `flutter build web`, and `flutter run -d chrome`), opening a BigTIFF slide
+  failed with `UnsupportedError`, and so did `exportSvsRegionAsSvs`,
+  `exportSvsRegionAsSvsPreservingLevels` and `rebuildSvsPyramid`, whose
+  output is always BigTIFF. Only `--wasm` builds worked. 64-bit fields are
+  now read and written as two 32-bit halves: bit-identical on native
+  platforms, and exact on the web up to 2^53 bytes. Classic TIFF slides were
+  never affected.
+
 ## 1.5.0
 
 * **`SvsImageView` stays responsive, and its memory bounded, on very large

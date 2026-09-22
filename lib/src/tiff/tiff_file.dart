@@ -89,7 +89,7 @@ class TiffIfd {
     }
     final data = ByteData.sublistView(t.valueField);
     final valueOffset = _file.header.kind == TiffKind.bigTiff
-        ? data.getUint64(0, _file.header.byteOrder)
+        ? data.getUint64Portable(0, _file.header.byteOrder)
         : data.getUint32(0, _file.header.byteOrder);
     return _file.readBytes(valueOffset, t.totalBytes);
   }
@@ -279,7 +279,7 @@ class TiffFile {
           'Unsupported BigTIFF offset size: $offsetByteSize',
         );
       }
-      final firstIfd = data.getUint64(8, order);
+      final firstIfd = data.getUint64Portable(8, order);
       return TiffHeader(
         byteOrder: order,
         kind: TiffKind.bigTiff,
@@ -305,7 +305,7 @@ class TiffFile {
     final dirCountBytes = await file.readBytes(offset, dirCountFieldSize);
     final dirCountData = ByteData.sublistView(dirCountBytes);
     final entryCount = isBig
-        ? dirCountData.getUint64(0, order)
+        ? dirCountData.getUint64Portable(0, order)
         : dirCountData.getUint16(0, order);
 
     final tableStart = offset + dirCountFieldSize;
@@ -318,7 +318,7 @@ class TiffFile {
       final id = tableData.getUint16(base, order);
       final type = tableData.getUint16(base + 2, order);
       final count = isBig
-          ? tableData.getUint64(base + entryCountFieldOffset, order)
+          ? tableData.getUint64Portable(base + entryCountFieldOffset, order)
           : tableData.getUint32(base + entryCountFieldOffset, order);
       final vOff = base + valueFieldOffset;
       final valueField = Uint8List.sublistView(
@@ -338,7 +338,7 @@ class TiffFile {
     final nextBytes = await file.readBytes(nextOffsetPos, valueFieldSize);
     final nextData = ByteData.sublistView(nextBytes);
     final next = isBig
-        ? nextData.getUint64(0, order)
+        ? nextData.getUint64Portable(0, order)
         : nextData.getUint32(0, order);
 
     return TiffIfd._(

@@ -25,6 +25,40 @@ abstract final class TiffType {
   static const ifd8 = 18;
 }
 
+/// 64-bit [ByteData] accessors that also work on the web: dart2js and DDC
+/// throw `UnsupportedError` from `getUint64`/`getInt64`/`setUint64`, so these
+/// combine two 32-bit halves instead. Natively the result is bit-identical to
+/// the built-in accessors; on the web (JS numbers) it's exact up to 2^53 —
+/// far past any real BigTIFF offset or count.
+extension PortableInt64Access on ByteData {
+  static const _two32 = 0x100000000;
+
+  int getUint64Portable(int byteOffset, Endian endian) {
+    final (hi, lo) = _halves(byteOffset, endian);
+    return getUint32(hi, endian) * _two32 + getUint32(lo, endian);
+  }
+
+  int getInt64Portable(int byteOffset, Endian endian) {
+    final (hi, lo) = _halves(byteOffset, endian);
+    return getInt32(hi, endian) * _two32 + getUint32(lo, endian);
+  }
+
+  /// [value] must be non-negative (every BigTIFF offset/count is).
+  void setUint64Portable(int byteOffset, int value, Endian endian) {
+    assert(value >= 0, 'setUint64Portable only encodes non-negative values');
+    final (hi, lo) = _halves(byteOffset, endian);
+    final high = value ~/ _two32;
+    setUint32(hi, high, endian);
+    setUint32(lo, value - high * _two32, endian);
+  }
+
+  /// Byte positions of the high and low 32-bit halves of the 64-bit value
+  /// at [byteOffset].
+  (int, int) _halves(int byteOffset, Endian endian) => endian == Endian.little
+      ? (byteOffset + 4, byteOffset)
+      : (byteOffset, byteOffset + 4);
+}
+
 /// Number of tiles needed to cover [dim] pixels at [tileDim] pixels each —
 /// the last tile in a row/column covers whatever's left over, which may be
 /// smaller than [tileDim]. Shared by every tiled-TIFF geometry calculation
@@ -75,8 +109,8 @@ List<int> decodeTiffInts(Uint8List bytes, int type, int count, Endian order) {
       TiffType.sshort => data.getInt16(o, order),
       TiffType.long || TiffType.ifd => data.getUint32(o, order),
       TiffType.slong => data.getInt32(o, order),
-      TiffType.long8 || TiffType.ifd8 => data.getUint64(o, order),
-      TiffType.slong8 => data.getInt64(o, order),
+      TiffType.long8 || TiffType.ifd8 => data.getUint64Portable(o, order),
+      TiffType.slong8 => data.getInt64Portable(o, order),
       _ => throw SvsFormatException('TIFF type $type is not integer-valued'),
     };
   }

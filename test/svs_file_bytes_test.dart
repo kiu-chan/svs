@@ -15,12 +15,13 @@ Uint8List _buildSparseSingleLevelSvs({
   required int width,
   required int height,
   required int tileSize,
+  bool bigTiff = false,
 }) {
   final tilesX = (width / tileSize).ceil();
   final tilesY = (height / tileSize).ceil();
   final tileCount = tilesX * tilesY;
   return buildTiff(
-    bigTiff: false,
+    bigTiff: bigTiff,
     order: Endian.little,
     ifds: [
       [
@@ -93,6 +94,25 @@ void main() {
     // same contract as the path-based SvsFile.open.
     final tile = await svs.readTileJpegBytes(0, 0, 0);
     expect(tile, isEmpty);
+  });
+
+  test('openBytes opens a BigTIFF slide', () async {
+    // BigTIFF's 64-bit offsets are what used to throw on the web.
+    final bytes = _buildSparseSingleLevelSvs(
+      width: 800,
+      height: 600,
+      tileSize: 256,
+      bigTiff: true,
+    );
+
+    final svs = await SvsFile.openBytes(bytes);
+    addTearDown(svs.close);
+
+    expect(svs.levels, hasLength(1));
+    expect(svs.levels[0].tilesAcrossX, 4);
+    expect(svs.levels[0].tilesAcrossY, 3);
+    expect(svs.metadata.appMag, 20);
+    expect(await svs.readTileJpegBytes(0, 3, 2), isEmpty);
   });
 
   test('openBytes rejects a corrupt/too-short buffer the same way open '
