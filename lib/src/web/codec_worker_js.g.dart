@@ -36,4 +36,4 @@ const codecWorkerSources = <String>[
   'lib/src/web/codec_worker_main.dart',
   'lib/src/web/codec_worker_protocol.dart',
 ];
-const codecWorkerSourceHash = '070249ff';
+const codecWorkerSourceHash = '9bd40c1a';

@@ -8,9 +8,16 @@ import 'svs_annotation.dart';
 /// doesn't apply to the shape's [SvsAnnotationShapeType], or where the
 /// slide's microns-per-pixel wasn't available.
 class SvsMeasurement {
+  /// The shape's path length or perimeter in micrometers, or null when
+  /// length does not apply to it or the slide's scale is unknown.
   final double? lengthMicrons;
+
+  /// The shape's enclosed area in square micrometers, or null when area
+  /// does not apply to it or the slide's scale is unknown.
   final double? areaMicronsSquared;
 
+  /// Creates a measurement; an omitted field means that measurement is not
+  /// available.
   const SvsMeasurement({this.lengthMicrons, this.areaMicronsSquared});
 }
 

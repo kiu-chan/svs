@@ -29,11 +29,24 @@ import 'dart:ui' as ui;
 ///
 /// Alpha is left untouched everywhere.
 class SvsImageAdjustments {
+  /// Shifts every pixel uniformly, by up to half the value range at
+  /// `±1.0`. `0` leaves it alone.
   final double brightness;
+
+  /// Scales values around mid-gray: `1.0` doubles the contrast, `-1.0`
+  /// flattens the image to mid-gray. `0` leaves it alone.
   final double contrast;
+
+  /// Raises the output black point, brightening dark regions, up to 30%
+  /// gray at `1.0`. `0` leaves it alone.
   final double shadows;
+
+  /// Lowers the output white point, dimming bright regions, down to 70%
+  /// gray at `1.0`. `0` leaves it alone.
   final double highlights;
 
+  /// Creates an adjustment; every parameter left out means no change on
+  /// that axis.
   const SvsImageAdjustments({
     this.brightness = 0,
     this.contrast = 0,
@@ -45,6 +58,8 @@ class SvsImageAdjustments {
   /// export function's `adjustments` parameter.
   static const none = SvsImageAdjustments();
 
+  /// Whether this adjustment would leave the image untouched, letting the
+  /// view and the exporters skip the work entirely.
   bool get isIdentity =>
       brightness == 0 && contrast == 0 && shadows == 0 && highlights == 0;
 

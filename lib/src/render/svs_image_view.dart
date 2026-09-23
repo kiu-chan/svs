@@ -48,7 +48,12 @@ enum SvsImageFit {
 /// yet. Pick [SvsImageFit.cover] instead to fill the viewport completely,
 /// cropping the slide's edges at the initial (minimum) zoom.
 class SvsImageView extends StatefulWidget {
+  /// The open slide to display. The caller keeps ownership: close it
+  /// yourself once this widget is gone.
   final SvsFile svsFile;
+
+  /// The in-memory cache of decoded tiles to draw from, shared with anyone
+  /// else who is given it. Left null, the view makes one of its own.
   final TileCache? cache;
 
   /// Optional persistent tile cache — when supplied, decoded tiles are read
@@ -125,6 +130,7 @@ class SvsImageView extends StatefulWidget {
   /// space reads as "nothing here yet" rather than as slide content.
   final Color backgroundColor;
 
+  /// Creates a view of [svsFile].
   const SvsImageView({
     super.key,
     required this.svsFile,

@@ -6,11 +6,20 @@ import 'lru_eviction.dart';
 /// or, when [span] is above 0, the composite of that level's `2^span` x
 /// `2^span` tiles starting at tile (`tileX << span`, `tileY << span`).
 class TileCacheKey {
+  /// The pyramid level the tile belongs to.
   final int level;
+
+  /// The tile's column, in tiles of this level's grid.
   final int tileX;
+
+  /// The tile's row, in tiles of this level's grid.
   final int tileY;
+
+  /// How many levels' worth of tiles this key covers: 0 for a single tile,
+  /// 1 for a 2x2 composite, and so on.
   final int span;
 
+  /// Creates a key for one tile, or for a composite when [span] is above 0.
   const TileCacheKey({
     required this.level,
     required this.tileX,
@@ -48,11 +57,16 @@ class _CacheEntry {
 /// Evicted images are disposed: [ui.Image] holds GPU-side memory that the
 /// Dart garbage collector does not reclaim on its own.
 class TileCache {
+  /// The decoded-pixel budget in bytes. Adding a tile past it evicts the
+  /// least recently used tiles until the total fits again.
   final int maxBytes;
+
   final _entries = <TileCacheKey, _CacheEntry>{};
   final _groupSizes = <(int, int), int>{};
   int _currentBytes = 0;
 
+  /// Creates an empty cache holding up to [maxBytes] of decoded pixels,
+  /// 150 MB by default.
   TileCache({this.maxBytes = 150 * 1024 * 1024});
 
   /// Total decoded-pixel bytes currently cached, across every tile.

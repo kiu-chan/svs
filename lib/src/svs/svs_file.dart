@@ -44,14 +44,34 @@ enum AssociatedImageKind {
 /// A non-tiled image embedded alongside the pyramid — the slide label,
 /// a macro (gross) photo, or a scanner-generated thumbnail.
 class SvsAssociatedImage {
+  /// What this image shows, inferred from its `ImageDescription`.
   final AssociatedImageKind kind;
+
+  /// Which IFD of the TIFF file this image is, counting from 0 — its
+  /// identity within the file, and what [readAllTags] reports on.
   final int ifdIndex;
+
+  /// The image's width in pixels.
   final int width;
+
+  /// The image's height in pixels.
   final int height;
+
+  /// TIFF `Compression` (259): see [ApCompression] for the values this
+  /// package recognises.
   final int compression;
+
+  /// TIFF `PhotometricInterpretation` (262): see [ApPhotometric].
   final int photometricInterpretation;
+
+  /// TIFF `SamplesPerPixel` (277) — 3 for RGB, 4 with an alpha channel.
   final int samplesPerPixel;
+
+  /// TIFF `BitsPerSample` (258), one entry per sample; this package decodes
+  /// raw rasters only when every entry is 8.
   final List<int> bitsPerSample;
+
+  /// TIFF `Predictor` (317): 1 for none, 2 for horizontal differencing.
   final int predictor;
 
   /// Whether this image uses new-style JPEG — decoded via [readStripJpegBytes]
@@ -265,11 +285,25 @@ class SvsAssociatedImage {
 /// (or how) its tile bytes can actually be fetched — so viewport/LOD math
 /// (see viewport_math.dart) can be unit-tested without opening any file.
 class SvsLevelGeometry {
+  /// This level's position in [SvsFile.levels], 0 being full resolution.
   final int index;
+
+  /// The level's width in pixels.
   final int width;
+
+  /// The level's height in pixels.
   final int height;
+
+  /// The width of one tile in pixels; the rightmost column of tiles is
+  /// padded out to it, so it may run past [width].
   final int tileWidth;
+
+  /// The height of one tile in pixels (TIFF `TileLength`); the bottom row
+  /// of tiles is padded out to it, so it may run past [height].
   final int tileLength;
+
+  /// TIFF `Compression` (259) for this level's tiles: [ApCompression.newJpeg]
+  /// or [ApCompression.jp2k] on the levels this package opens.
   final int compression;
 
   /// TIFF `PhotometricInterpretation` (262), or -1 if absent. Only
@@ -280,6 +314,8 @@ class SvsLevelGeometry {
   /// powers of 2 but this is computed, never assumed.
   final double downsample;
 
+  /// Creates a level geometry from facts read off a TIFF directory, or
+  /// made up in a test.
   const SvsLevelGeometry({
     required this.index,
     required this.width,
@@ -291,7 +327,10 @@ class SvsLevelGeometry {
     required this.downsample,
   });
 
+  /// How many tiles wide this level's tile grid is, rounding up.
   int get tilesAcrossX => tilesAcross(width, tileWidth);
+
+  /// How many tiles tall this level's tile grid is, rounding up.
   int get tilesAcrossY => tilesAcross(height, tileLength);
 }
 
@@ -300,20 +339,46 @@ class SvsLevelGeometry {
 /// JPEGTables are only read from disk the first time a tile is actually
 /// requested from this level.
 class SvsLevel {
+  /// This level's size, tiling and scale, without the means to read it —
+  /// the part viewport and LOD maths need.
   final SvsLevelGeometry geometry;
 
+  /// See [SvsLevelGeometry.index].
   int get index => geometry.index;
+
+  /// See [SvsLevelGeometry.width].
   int get width => geometry.width;
+
+  /// See [SvsLevelGeometry.height].
   int get height => geometry.height;
+
+  /// See [SvsLevelGeometry.tileWidth].
   int get tileWidth => geometry.tileWidth;
+
+  /// See [SvsLevelGeometry.tileLength].
   int get tileLength => geometry.tileLength;
+
+  /// See [SvsLevelGeometry.compression].
   int get compression => geometry.compression;
+
+  /// See [SvsLevelGeometry.photometricInterpretation].
   int get photometricInterpretation => geometry.photometricInterpretation;
+
+  /// See [SvsLevelGeometry.downsample].
   double get downsample => geometry.downsample;
+
+  /// See [SvsLevelGeometry.tilesAcrossX].
   int get tilesAcrossX => geometry.tilesAcrossX;
+
+  /// See [SvsLevelGeometry.tilesAcrossY].
   int get tilesAcrossY => geometry.tilesAcrossY;
 
+  /// Whether this level's tiles are new-style JPEG, which
+  /// [readTileJpegBytes] hands back ready to decode.
   bool get isJpeg => compression == ApCompression.newJpeg;
+
+  /// Whether this level's tiles are JPEG2000, decoded by this package's own
+  /// codec rather than the platform's.
   bool get isJp2k => compression == ApCompression.jp2k;
 
   /// Whether this level's JPEG tiles need `forceRgbColorTransform` (in
@@ -487,8 +552,17 @@ class SvsFile {
   /// tiles are fetched/decoded on the calling isolate instead (see
   /// `LodController`).
   final String? path;
+
+  /// The resolution pyramid, finest first: `levels[0]` is full resolution
+  /// and each one after it is more downsampled.
   final List<SvsLevel> levels;
+
+  /// The non-tiled images stored alongside the pyramid — label, macro and
+  /// thumbnail, in the order their IFDs appear.
   final List<SvsAssociatedImage> associatedImages;
+
+  /// The slide's scanner metadata, parsed from the Aperio
+  /// `ImageDescription` — magnification, microns per pixel, and the rest.
   final SvsMetadata metadata;
 
   SvsFile._({
@@ -499,6 +573,14 @@ class SvsFile {
     required this.metadata,
   });
 
+  /// Opens the slide at [path], reading only its TIFF directories — tiles
+  /// are read later, as they are asked for.
+  ///
+  /// Not supported on the web, which has no paths; use [openBytes] or
+  /// [openSource] there. Call [close] when finished with the slide.
+  ///
+  /// Throws an [SvsFormatException] if the file is not a TIFF this reader
+  /// can make sense of.
   static Future<SvsFile> open(String path) async {
     final source = await openFileByteSource(path);
     final TiffFile tiff;
@@ -664,6 +746,8 @@ class SvsFile {
     return AssociatedImageKind.thumbnail;
   }
 
+  /// See [SvsLevel.readTileJpegBytes]; throws an [SvsFormatException] if
+  /// [level] is not one this slide has.
   Future<Uint8List> readTileJpegBytes(int level, int tx, int ty) {
     if (level < 0 || level >= levels.length) {
       throw SvsFormatException(
@@ -692,6 +776,8 @@ class SvsFile {
     );
   }
 
+  /// Releases the slide's underlying byte source, and with it any file
+  /// handle it holds. Reading from the file afterwards is an error.
   Future<void> close() => _tiff.close();
 
   /// A full structured dump of every TIFF tag on every pyramid level and

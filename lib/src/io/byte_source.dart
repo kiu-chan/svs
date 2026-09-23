@@ -18,6 +18,9 @@ import 'dart:typed_data';
 /// once (tiles are requested concurrently while panning), serializing them
 /// internally if the underlying storage needs that.
 abstract class RandomAccessByteSource {
+  /// Allows subclasses to declare a const constructor of their own.
+  const RandomAccessByteSource();
+
   /// Reads up to [length] bytes starting at [offset]. Best-effort at the end
   /// of the source: returns fewer bytes (down to empty) rather than padding
   /// or throwing. The reader checks the length it gets back itself, and

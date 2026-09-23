@@ -1,7 +1,20 @@
 import 'dart:ui';
 
 /// The kind of geometry an [SvsAnnotation] represents.
-enum SvsAnnotationShapeType { point, rectangle, polyline, polygon }
+enum SvsAnnotationShapeType {
+  /// A single marked spot, drawn as a dot.
+  point,
+
+  /// An axis-aligned box, given by any two opposite corners.
+  rectangle,
+
+  /// An open chain of line segments through the vertices in order.
+  polyline,
+
+  /// A closed shape; the edge from the last vertex back to the first is
+  /// implicit.
+  polygon,
+}
 
 /// A user-drawn annotation anchored to a slide, in level-0 pixel coordinates
 /// — independent of the current pan/zoom transform, so it stays put as the
@@ -19,10 +32,28 @@ enum SvsAnnotationShapeType { point, rectangle, polyline, polygon }
 /// annotation's line looks the same weight at any zoom level, rather than
 /// scaling with the slide.
 class SvsAnnotation {
+  /// Identifies this annotation within an
+  /// [SvsAnnotationController]'s list.
+  ///
+  /// Generated at construction unless one is given, and carried over
+  /// unchanged by [copyWith] and by a [toJson]/[fromJson] round trip.
   final String id;
+
+  /// The kind of geometry [points] describes.
   final SvsAnnotationShapeType type;
+
+  /// The annotation's vertices, in level-0 slide pixels; how many there are,
+  /// and what each means, depends on [type].
   final List<Offset> points;
+
+  /// The colour its outline is stroked in, and its interior filled with, at
+  /// a quarter opacity, when [filled].
+  ///
+  /// A selected annotation is drawn in the view's selection colour instead.
   final Color color;
+
+  /// The outline's width in screen (logical) pixels, so a line keeps the
+  /// same weight however far the slide is zoomed in or out.
   final double strokeWidth;
 
   /// Whether a [SvsAnnotationShapeType.rectangle] or
@@ -31,8 +62,20 @@ class SvsAnnotation {
   /// and [SvsAnnotationShapeType.polyline].
   final bool filled;
 
+  /// Caller-supplied text carried with the annotation, kept by [copyWith]
+  /// and stored by [toJson]; null when the annotation is unlabelled.
+  ///
+  /// [SvsImageView] does not paint it — the text it draws on an annotation
+  /// is that annotation's measurement, from [measureAnnotation]. Use this
+  /// for a name or a note of your own, and paint it yourself if you want it
+  /// on screen.
   final String? label;
 
+  /// Creates an annotation of [type] through [points].
+  ///
+  /// [id] defaults to a freshly generated one, unique within this isolate.
+  /// [points] must not be empty, and each [type] expects a particular
+  /// number of points, as described on the class.
   SvsAnnotation({
     String? id,
     required this.type,
@@ -61,6 +104,11 @@ class SvsAnnotation {
     return Rect.fromLTRB(minX, minY, maxX, maxY);
   }
 
+  /// A copy of this annotation with the given fields replaced, keeping its
+  /// [id] and [type].
+  ///
+  /// An omitted or null argument leaves that field as it is, so [label]
+  /// cannot be cleared this way — build a new [SvsAnnotation] for that.
   SvsAnnotation copyWith({
     List<Offset>? points,
     Color? color,
@@ -106,6 +154,11 @@ class SvsAnnotation {
     }
   }
 
+  /// This annotation as a JSON-encodable map, which
+  /// [SvsAnnotation.fromJson] reads back.
+  ///
+  /// [points] become `[dx, dy]` pairs and [color] a packed ARGB integer;
+  /// [label] is left out when it is null.
   Map<String, dynamic> toJson() => {
     'id': id,
     'type': type.name,
@@ -116,6 +169,8 @@ class SvsAnnotation {
     if (label != null) 'label': label,
   };
 
+  /// Rebuilds an annotation from a map [toJson] produced, keeping the
+  /// [id] it was stored with.
   factory SvsAnnotation.fromJson(Map<String, dynamic> json) {
     return SvsAnnotation(
       id: json['id'] as String,

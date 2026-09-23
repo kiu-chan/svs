@@ -16,6 +16,9 @@ import 'dart:typed_data';
 /// file on disk this way; implement this class yourself for any other
 /// destination.
 abstract class RandomAccessByteSink {
+  /// Allows subclasses to declare a const constructor of their own.
+  const RandomAccessByteSink();
+
   /// Writes [bytes] starting at the current position, advancing it by
   /// `bytes.length`.
   Future<void> writeFrom(List<int> bytes);
